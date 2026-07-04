@@ -4,7 +4,10 @@ from typing import Any
 
 from ai_engine import generate_text
 from db import get_db, count_user_messages, upsert_global_insight, get_global_insights
-from utils import tokenize, similarity, now_iso, new_id, chunk_text
+from utils import (
+    tokenize, similarity, now_iso, new_id, chunk_text,
+    bm25_scores, cosine_sim, get_embedding,
+)
 
 RETRIEVAL_CHAR_BUDGET = 5200
 
@@ -31,13 +34,34 @@ def remember(
             if not tokens:
                 continue
             chunk_importance = importance * (0.92 if index else 1.0)
+            emb = get_embedding(chunk)
             conn.execute(
                 "INSERT INTO memories "
-                "(id, conversation_id, message_id, source_role, content, tokens, importance, created_at) "
-                "VALUES (?,?,?,?,?,?,?,?)",
+                "(id, conversation_id, message_id, source_role, content, tokens, importance, embedding, created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
                 (new_id(), conv_id, message_id, role, chunk,
-                 json.dumps(tokens[:450], ensure_ascii=False), chunk_importance, ts),
+                 json.dumps(tokens[:450], ensure_ascii=False), chunk_importance,
+                 json.dumps(emb) if emb else None, ts),
             )
+
+
+def backfill_embeddings(limit: int = 500) -> int:
+    """Computa embeddings de memórias antigas (gravadas antes da busca
+    híbrida). Chamar em thread no startup; barato quando não há pendências."""
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT id, content FROM memories WHERE embedding IS NULL LIMIT ?", (limit,)
+        ).fetchall()
+    done = 0
+    for r in rows:
+        emb = get_embedding(str(r["content"]))
+        if emb is None:
+            break  # Ollama fora do ar — tenta de novo no próximo startup
+        with get_db() as conn:
+            conn.execute("UPDATE memories SET embedding = ? WHERE id = ?",
+                         (json.dumps(emb), r["id"]))
+        done += 1
+    return done
 
 
 def retrieve(
@@ -49,6 +73,16 @@ def retrieve(
     # Don't retrieve memories for trivial/short messages — avoids polluting context
     if not prompt_tokens or len(prompt.strip()) < 8:
         return []
+
+    # Palavras sobre o ATO de lembrar não descrevem o conteúdo buscado —
+    # sem esse filtro, "lembra do projeto?" casa com todo "você lembra..."
+    # antigo em vez de casar com o projeto
+    _META = {
+        "lembra", "lembrar", "lembre", "lembro", "falamos", "falei", "falou",
+        "conversamos", "conversa", "comentei", "comentou", "discutimos",
+        "disse", "dissemos", "mencionei", "mencionou", "tratamos",
+    }
+    content_tokens = [t for t in prompt_tokens if t not in _META] or prompt_tokens
 
     with get_db() as conn:
         mem_rows = conn.execute(
@@ -68,51 +102,61 @@ def retrieve(
         for r in global_rows_raw
     ]
 
-    def score(row: Any, base_imp: float = 1.0) -> float:
+    # Busca híbrida (BM25 + embedding, mesma fusão por score do db.py):
+    # memória gravada como "prefeitura reajustou tabela" agora responde a
+    # "aquele aumento salarial que comentei" — resgate por significado,
+    # essencial entre conversas diferentes.
+    candidates: list[tuple[dict[str, Any], float, bool]] = []
+    for row in mem_rows:
+        candidates.append((dict(row), 1.0, False))
+    for row in insight_rows:
+        candidates.append((dict(row), 2.0, False))
+    for row in global_rows:
+        candidates.append((row, 3.0, True))
+
+    cand_toks: list[list[str]] = []
+    cand_embs: list["list[float] | None"] = []
+    for row, _, _ in candidates:
         try:
             toks = [str(t) for t in json.loads(str(row["tokens"] or "[]"))]
         except (json.JSONDecodeError, TypeError):
             toks = tokenize(str(row["content"]))
-        base = similarity(prompt_tokens, toks)
-        if base <= 0:
-            return 0.0
-        imp = float(row["importance"] or base_imp)
-        acc = int(row["access_count"] or 0)
-        return base * imp * (1 + math.log1p(acc))
+        cand_toks.append(toks)
+        emb_raw = row.get("embedding")
+        emb = None
+        if emb_raw:
+            try:
+                parsed = json.loads(str(emb_raw))
+                emb = parsed if isinstance(parsed, list) else None
+            except (json.JSONDecodeError, TypeError):
+                emb = None
+        cand_embs.append(emb)
+
+    q_emb = get_embedding(prompt[:1000], kind="query") if candidates else None
+    kw = bm25_scores(content_tokens, cand_toks)
+    kw_max = max(kw) if kw else 0.0
+    cos = [cosine_sim(q_emb, e) if (q_emb and e) else None for e in cand_embs]
+    valid = [c for c in cos if c is not None and c > 0]
+    c_min = min(valid) if valid else 0.0
+    c_span = (max(valid) - c_min) if valid else 0.0
 
     ranked: list[tuple[float, dict[str, Any], list[str]]] = []
-
-    for row in mem_rows:
-        s = score(row)
-        if s > 0:
-            try:
-                toks = [str(t) for t in json.loads(str(row["tokens"] or "[]"))]
-            except (json.JSONDecodeError, TypeError):
-                toks = tokenize(str(row["content"]))
-            ranked.append((s, dict(row), toks))
-
-    for row in insight_rows:
-        s = score(row, base_imp=2.0)
-        if s > 0:
-            try:
-                toks = [str(t) for t in json.loads(str(row["tokens"] or "[]"))]
-            except (json.JSONDecodeError, TypeError):
-                toks = tokenize(str(row["content"]))
-            ranked.append((s, dict(row), toks))
-
-    # Global insights: only include when there's a real query to match against
-    for row in global_rows:
-        s = score(row, base_imp=3.0)
-        # Only apply floor when the prompt has enough substance to warrant global context
-        if prompt_tokens and len(prompt_tokens) >= 2:
+    for i, (row, base_imp, is_global) in enumerate(candidates):
+        s_kw = (kw[i] / kw_max) if kw_max > 0 else 0.0
+        c = cos[i]
+        s_vec = ((c - c_min) / c_span) if (c is not None and c_span > 0) else 0.0
+        base = 0.65 * s_kw + 0.35 * s_vec
+        imp = float(row.get("importance") or base_imp)
+        acc = int(row.get("access_count") or 0)
+        # Boost de acesso AMORTECIDO (0.15×): o antigo 1+log1p(acc) criava
+        # rico-fica-mais-rico — memória-lixo acessada 50x (×4.9) afogava
+        # qualquer match relevante novo (×1.0)
+        s = base * imp * (1 + 0.15 * math.log1p(acc))
+        if is_global and len(prompt_tokens) >= 2:
+            # Global insights têm piso: contexto acumulado entra mesmo sem match
             s = max(s, 0.08)
-        if s <= 0:
-            continue
-        try:
-            toks = [str(t) for t in json.loads(str(row["tokens"] or "[]"))]
-        except (json.JSONDecodeError, TypeError):
-            toks = tokenize(str(row["content"]))
-        ranked.append((s, row, toks))
+        if s > 0:
+            ranked.append((s, row, cand_toks[i]))
 
     ranked.sort(key=lambda x: x[0], reverse=True)
 

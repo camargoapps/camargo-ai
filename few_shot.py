@@ -430,6 +430,17 @@ def build_few_shot_block(
     personality_id → exclui categorias presas a outra persona
     """
     if prompt.strip():
+        # Saudação/conversa social: só o exemplo de voz da persona basta —
+        # injetar o bloco estático inteiro (~1.400 tok) num "oi" é desperdício
+        if len(tokenize(prompt)) < 2:
+            persona_keys = [
+                k for k, p in PERSONA_ONLY_CATEGORIES.items() if p == personality_id
+            ]
+            voice = [e for e in _get_index() if e["key"] in persona_keys][:1]
+            if voice:
+                budget = CLOUD_TOKEN_BUDGET if is_cloud else LOCAL_TOKEN_BUDGET
+                return _render_block(voice, is_cloud, budget)
+            return ""
         selected = _select_relevant(prompt, is_cloud, personality_id)
         if selected:
             budget = CLOUD_TOKEN_BUDGET if is_cloud else LOCAL_TOKEN_BUDGET

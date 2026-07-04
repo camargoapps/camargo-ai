@@ -196,6 +196,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if ins_cols and "tokens" not in ins_cols:
         conn.execute("ALTER TABLE insights ADD COLUMN tokens TEXT NOT NULL DEFAULT '[]'")
 
+    if "embedding" not in mem_cols:
+        conn.execute("ALTER TABLE memories ADD COLUMN embedding TEXT")
+
     msg_cols = cols("messages")
     if "feedback" not in msg_cols:
         # '' (sem avaliação) | 'up' (vira exemplo de treino) | 'down' (negativo)
@@ -447,6 +450,42 @@ def add_message(conv_id: str, role: str, content: str) -> str:
         )
         conn.execute("UPDATE conversations SET updated_at = ? WHERE id = ?", (ts, conv_id))
     return mid
+
+
+def search_all_conversations(query: str, limit: int = 10) -> list[dict[str, Any]]:
+    """Busca global: em qual conversa algo foi dito. Retorna conversas com
+    trecho de contexto, mais recente primeiro."""
+    q = query.strip().lower()
+    if len(q) < 3:
+        return []
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT m.conversation_id, m.content, m.created_at, m.role, c.title "
+            "FROM messages m JOIN conversations c ON c.id = m.conversation_id "
+            "WHERE m.role IN ('user','assistant') AND LOWER(m.content) LIKE ? "
+            "ORDER BY m.created_at DESC LIMIT 200",
+            (f"%{q}%",),
+        ).fetchall()
+    results: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for r in rows:
+        cid = str(r["conversation_id"])
+        if cid in seen:
+            continue
+        seen.add(cid)
+        content = str(r["content"])
+        pos = content.lower().find(q)
+        start = max(0, pos - 60)
+        snippet = ("…" if start else "") + content[start:pos + len(q) + 90].strip() + "…"
+        results.append({
+            "conversation_id": cid,
+            "title": str(r["title"]),
+            "snippet": snippet,
+            "when": str(r["created_at"])[:10],
+        })
+        if len(results) >= limit:
+            break
+    return results
 
 
 def set_message_feedback(message_id: str, value: str) -> bool:

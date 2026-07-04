@@ -168,6 +168,15 @@ HTML = """<!doctype html>
     }
     .ctrl-row select { min-width: 150px; }
     #apiKey { min-width: 200px; }
+    .global-search {
+      margin: 6px 10px; padding: 7px 10px; font-size: 12.5px;
+      border: 1px solid var(--line); border-radius: 8px;
+      background: var(--panel-2); color: var(--text); width: calc(100% - 20px);
+    }
+    .search-hit { cursor: pointer; padding: 8px 10px; border-radius: 8px; }
+    .search-hit:hover { background: var(--panel-2); }
+    .search-hit .sh-title { font-size: 12.5px; font-weight: 700; }
+    .search-hit .sh-snippet { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
     .privacy-row { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--muted); }
     .privacy-row input { min-width: 0; width: 14px; height: 14px; }
     .workspace-row {
@@ -439,6 +448,8 @@ HTML = """<!doctype html>
     </div>
     <button class="btn-new" id="newChat">+ Nova conversa</button>
     <button class="btn-folder" id="newFolderBtn">📁 Nova pasta</button>
+    <input id="globalSearch" class="global-search" type="search"
+           placeholder="🔍 Buscar em todas as conversas..." autocomplete="off">
     <div class="history" id="history"></div>
     <div class="status-bar" id="statusBar">Conectando...</div>
   </aside>
@@ -774,6 +785,30 @@ HTML = """<!doctype html>
     };
     return sec;
   }
+
+  const globalSearchEl = $("globalSearch");
+  let searchTimer = null;
+  globalSearchEl.addEventListener("input", () => {
+    clearTimeout(searchTimer);
+    const q = globalSearchEl.value.trim();
+    if (q.length < 3) { renderHistory(); return; }
+    searchTimer = setTimeout(async () => {
+      const data = await apiFetch(`/api/search?q=${encodeURIComponent(q)}`);
+      historyEl.innerHTML = "";
+      if (!data.results.length) {
+        historyEl.innerHTML = '<div class="empty">Nada encontrado.</div>';
+        return;
+      }
+      data.results.forEach(r => {
+        const div = document.createElement("div");
+        div.className = "search-hit";
+        div.innerHTML = `<div class="sh-title">${escapeHtml(r.title)} <span style="font-weight:400;color:var(--muted)">· ${r.when}</span></div>` +
+                        `<div class="sh-snippet">${escapeHtml(r.snippet)}</div>`;
+        div.onclick = () => { globalSearchEl.value = ""; loadConversation(r.conversation_id); };
+        historyEl.appendChild(div);
+      });
+    }, 300);
+  });
 
   function renderHistory() {
     historyEl.innerHTML = "";
@@ -1601,7 +1636,8 @@ def build_ollama_messages(
             context_parts.append(
                 "[Referência geral — use apenas o que ajudar a responder e cite a "
                 "fonte entre parênteses ao usar, ex.: (direito_administrativo_pmc). "
-                "Se as referências não cobrirem o assunto, diga isso em vez de inventar]\n"
+                "Se as referências não cobrirem o assunto, diga isso em vez de inventar. "
+                "Em caso de conflito, a referência prevalece sobre seu conhecimento prévio]\n"
                 + "\n\n".join(know_blocks)
             )
     if global_text:
@@ -1867,6 +1903,12 @@ def api_conversation(conv_id: str) -> Response | tuple[Response, int]:
         "messages": database.get_messages(conv_id),
         "workspace": database.workspace_summary(conv_id),
     })
+
+
+@app.route("/api/search")
+def api_search() -> Response:
+    q = flask_request.args.get("q", "").strip()
+    return jsonify({"results": database.search_all_conversations(q)})
 
 
 @app.route("/api/messages/<message_id>/feedback", methods=["POST"])
@@ -2170,6 +2212,7 @@ threading.Thread(
         database.sync_knowledge(force=True),
         few_shot.warm_cache(),
         query_expand.warm(),
+        mem.backfill_embeddings(),
     ),
     daemon=True,
 ).start()
