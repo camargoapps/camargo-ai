@@ -196,6 +196,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if ins_cols and "tokens" not in ins_cols:
         conn.execute("ALTER TABLE insights ADD COLUMN tokens TEXT NOT NULL DEFAULT '[]'")
 
+    msg_cols = cols("messages")
+    if "feedback" not in msg_cols:
+        # '' (sem avaliação) | 'up' (vira exemplo de treino) | 'down' (negativo)
+        conn.execute("ALTER TABLE messages ADD COLUMN feedback TEXT NOT NULL DEFAULT ''")
+
     # doc_chunks migration: add filename column if table existed without it
     table_exists = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='doc_chunks'"
@@ -442,6 +447,46 @@ def add_message(conv_id: str, role: str, content: str) -> str:
         )
         conn.execute("UPDATE conversations SET updated_at = ? WHERE id = ?", (ts, conv_id))
     return mid
+
+
+def set_message_feedback(message_id: str, value: str) -> bool:
+    """Grava avaliação do usuário numa resposta. Retorna False se a mensagem
+    não existe ou não é do assistente (só respostas são avaliáveis)."""
+    if value not in ("", "up", "down"):
+        raise ValueError("feedback deve ser '', 'up' ou 'down'")
+    with get_db() as conn:
+        cur = conn.execute(
+            "UPDATE messages SET feedback = ? WHERE id = ? AND role = 'assistant'",
+            (value, message_id),
+        )
+        return cur.rowcount > 0
+
+
+def get_feedback_pairs() -> list[dict[str, Any]]:
+    """Pares (pergunta do usuário, resposta avaliada) para o exportador do
+    dataset. A pergunta é a mensagem 'user' imediatamente anterior à resposta
+    na mesma conversa."""
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT id, conversation_id, content, feedback, created_at FROM messages "
+            "WHERE role = 'assistant' AND feedback != '' ORDER BY created_at ASC"
+        ).fetchall()
+        pairs: list[dict[str, Any]] = []
+        for r in rows:
+            user_row = conn.execute(
+                "SELECT content FROM messages WHERE conversation_id = ? AND role = 'user' "
+                "AND created_at <= ? AND id != ? ORDER BY created_at DESC LIMIT 1",
+                (r["conversation_id"], r["created_at"], r["id"]),
+            ).fetchone()
+            if not user_row:
+                continue
+            pairs.append({
+                "message_id": str(r["id"]),
+                "user": str(user_row["content"]),
+                "assistant": str(r["content"]),
+                "feedback": str(r["feedback"]),
+            })
+        return pairs
 
 
 # Metadados de tipo de documento: permitem priorizar chunks do tipo certo

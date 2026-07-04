@@ -214,6 +214,17 @@ HTML = """<!doctype html>
     .message.assistant { align-self: flex-start; background: var(--panel); border: 1px solid var(--line); }
     .meta { display: block; font-size: 11px; color: var(--muted); margin-bottom: 5px; font-weight: 700; text-transform: uppercase; }
     .attachments { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 5px; }
+    .feedback { margin-top: 8px; display: flex; gap: 4px; opacity: .4; transition: opacity .15s; }
+    .message.assistant:hover .feedback, .feedback:has(.active) { opacity: 1; }
+    .fb-btn {
+      border: 1px solid var(--line); background: var(--panel-2);
+      border-radius: 8px; padding: 2px 8px; font-size: 13px;
+      cursor: pointer; filter: grayscale(1);
+    }
+    .fb-btn:hover { filter: none; }
+    .fb-btn.active { filter: none; }
+    .fb-btn.active[data-v="up"] { background: #dcfce7; border-color: #86efac; }
+    .fb-btn.active[data-v="down"] { background: #fee2e2; border-color: #fca5a5; }
     .pill {
       border: 1px solid var(--line); background: var(--panel-2);
       border-radius: 999px; padding: 4px 10px; font-size: 12px;
@@ -878,11 +889,11 @@ HTML = """<!doctype html>
       messagesEl.innerHTML = '<div class="empty">Nenhuma mensagem ainda. Comece a conversar!</div>';
       return;
     }
-    messages.forEach(m => appendRenderedMessage(m.role, m.content, m.attachments || [], m.agent_files || []));
+    messages.forEach(m => appendRenderedMessage(m.role, m.content, m.attachments || [], m.agent_files || [], m.id, m.feedback || ""));
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 
-  function appendRenderedMessage(role, content, attachments = [], agentFiles = []) {
+  function appendRenderedMessage(role, content, attachments = [], agentFiles = [], msgId = "", feedback = "") {
     const empty = messagesEl.querySelector(".empty");
     if (empty) empty.remove();
     const div = document.createElement("div");
@@ -896,11 +907,34 @@ HTML = """<!doctype html>
           : `<span class="pill">${escapeHtml(f.name)}</span>`
       ).join("") + "</div>";
     }
-    div.innerHTML = `<span class="meta">${label}</span>${renderContent(content || "")}${atts}${renderAgentFiles(agentFiles)}`;
+    let fb = "";
+    if (role === "assistant" && msgId) {
+      fb = `<div class="feedback" data-mid="${msgId}">
+        <button class="fb-btn${feedback === "up" ? " active" : ""}" data-v="up" title="Resposta boa — vira exemplo de treino">👍</button>
+        <button class="fb-btn${feedback === "down" ? " active" : ""}" data-v="down" title="Resposta ruim — vira exemplo negativo">👎</button>
+      </div>`;
+    }
+    div.innerHTML = `<span class="meta">${label}</span>${renderContent(content || "")}${atts}${renderAgentFiles(agentFiles)}${fb}`;
     messagesEl.appendChild(div);
     messagesEl.scrollTop = messagesEl.scrollHeight;
     return div;
   }
+
+  messagesEl.addEventListener("click", async (e) => {
+    const btn = e.target.closest(".fb-btn");
+    if (!btn) return;
+    const bar = btn.closest(".feedback");
+    const value = btn.classList.contains("active") ? "" : btn.dataset.v;
+    try {
+      await apiFetch(`/api/messages/${bar.dataset.mid}/feedback`, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({value}),
+      });
+      bar.querySelectorAll(".fb-btn").forEach(b => b.classList.remove("active"));
+      if (value) btn.classList.add("active");
+    } catch (err) { /* feedback é best-effort; não interrompe o chat */ }
+  });
 
   async function loadConversations() {
     const [convData, folderData] = await Promise.all([
@@ -1823,6 +1857,17 @@ def api_conversation(conv_id: str) -> Response | tuple[Response, int]:
         "messages": database.get_messages(conv_id),
         "workspace": database.workspace_summary(conv_id),
     })
+
+
+@app.route("/api/messages/<message_id>/feedback", methods=["POST"])
+def api_message_feedback(message_id: str) -> Response | tuple[Response, int]:
+    data = flask_request.get_json(silent=True) or {}
+    value = str(data.get("value", ""))
+    if value not in ("", "up", "down"):
+        return jsonify({"error": "value deve ser '', 'up' ou 'down'."}), 400
+    if not database.set_message_feedback(message_id, value):
+        return jsonify({"error": "Mensagem não encontrada."}), 404
+    return jsonify({"ok": True, "feedback": value})
 
 
 @app.route("/api/conversations/<conv_id>/workspace", methods=["PUT"])

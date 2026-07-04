@@ -52,6 +52,7 @@ CATEGORY_LABELS: dict[str, str] = {
     "14_falta_contexto":        "Contexto Insuficiente",
     "15_multiturno":            "Diálogo Multi-turno",
     "16_atlas_voz":             "Voz e Personalidade",
+    "17_feedback":              "Aprovadas pelo Usuário",
 }
 
 # Categories tied to a specific persona's voice — only injected when that
