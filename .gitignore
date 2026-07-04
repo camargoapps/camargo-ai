@@ -44,6 +44,10 @@ knowledge/perfil_marcelo_camargo.md
 # Documentos de trabalho ingeridos (ingest.py) — internos, não sobem
 knowledge/doc_*.md
 
+# Feedback do chat pode conter conteúdo de trabalho — fica local
+dataset/17_feedback.jsonl
+dataset/00_feedback_negativo.jsonl
+
 # Artefatos gerados (deriváveis do dataset/ e do treino)
 dataset_openai.jsonl
 eval/results/

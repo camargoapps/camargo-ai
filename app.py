@@ -1587,7 +1587,13 @@ def build_ollama_messages(
     system_parts = [f"## IDENTIDADE\n{p.system_prompt}"]
     facts_block = facts.get_facts_block()
     if facts_block:
-        system_parts.append(f"## CONTEXTO PERMANENTE (fatos sempre válidos sobre o usuário)\n{facts_block}")
+        system_parts.append(
+            "## SOBRE O USUÁRIO (conhecimento de fundo)\n"
+            "Incorpore com naturalidade, como quem simplesmente conhece a pessoa. "
+            "NUNCA mencione esta seção, não recite estes itens em lista e não cite "
+            "nomes de sistemas internos (embeddings, RAG, memórias) sem necessidade.\n"
+            + facts_block
+        )
     system_parts.append(f"## DATA ATUAL\n{time.strftime('%d/%m/%Y')}")
     system = "\n\n".join(system_parts)
     system += few_shot.build_few_shot_block(
@@ -1633,13 +1639,21 @@ def build_ollama_messages(
             for k in knowledge if str(k.get("content", "")).strip()
         ]
         if know_blocks:
-            context_parts.append(
-                "[Referência geral — use apenas o que ajudar a responder e cite a "
-                "fonte entre parênteses ao usar, ex.: (direito_administrativo_pmc). "
-                "Se as referências não cobrirem o assunto, diga isso em vez de inventar. "
-                "Em caso de conflito, a referência prevalece sobre seu conhecimento prévio]\n"
-                + "\n\n".join(know_blocks)
-            )
+            # Citação de fonte só em matéria oficial (lei, decreto, parecer...);
+            # em conversa comum ela polui e vaza os bastidores da resposta
+            if reasoning.is_official_matter(raw_prompt or user_prompt):
+                instr = (
+                    "[Referência oficial — use o que ajudar a responder e cite a "
+                    "fonte entre parênteses ao usar, ex.: (direito_administrativo_pmc). "
+                    "Se as referências não cobrirem o assunto, diga isso em vez de inventar. "
+                    "Em caso de conflito, a referência prevalece sobre seu conhecimento prévio]\n"
+                )
+            else:
+                instr = (
+                    "[Apoio — use o que ajudar a responder, com naturalidade, sem citar "
+                    "fontes nem mencionar que recebeu referências ou contexto]\n"
+                )
+            context_parts.append(instr + "\n\n".join(know_blocks))
     if global_text:
         context_parts.append(f"[Conhecimento acumulado]\n{global_text}")
     if conv_text:

@@ -41,6 +41,21 @@ _CREATIVE_HINTS = (
 )
 
 
+# Matéria oficial/normativa: só nesses casos a resposta deve citar fonte
+_OFFICIAL_HINTS = (
+    "lei", "decreto", "portaria", "instrução normativa", "instrucao normativa",
+    "parecer", "ofício", "oficio", "ementa", "ato administrativo", "atos oficiais",
+    "norma", "estatuto", "artigo", "resolução", "resolucao", "jurídic", "juridic",
+    "legal", "processo administrativo", "estágio probatório", "estagio probatorio",
+    "desvio de função", "desvio de funcao",
+)
+
+
+def is_official_matter(prompt: str) -> bool:
+    p = prompt.lower()
+    return any(h in p for h in _OFFICIAL_HINTS)
+
+
 def task_options(prompt: str) -> "dict | None":
     """Options do Ollama ajustadas ao tipo de pergunta, ou None (default)."""
     p = prompt.lower()
