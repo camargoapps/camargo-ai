@@ -41,14 +41,14 @@ try:
         _plt.close(_n)
         _imgs.append(_b64.b64encode(_buf.getvalue()).decode())
     if _imgs:
-        print('\\n__NEXUS_IMGS__' + '||'.join(_imgs) + '__END_IMGS__')
+        print('\\n__MARCELLUS_IMGS__' + '||'.join(_imgs) + '__END_IMGS__')
 except Exception:
     pass
 """
 
 
 def execute_python(code: str, timeout: int = EXEC_TIMEOUT) -> dict:
-    work_dir = Path(tempfile.mkdtemp(prefix="nexus_exec_"))
+    work_dir = Path(tempfile.mkdtemp(prefix="marcellus_exec_"))
     script_path = work_dir / "run.py"
     script_path.write_text(_PREAMBLE + code + "\n" + _POSTAMBLE, encoding="utf-8")
     try:
@@ -62,8 +62,8 @@ def execute_python(code: str, timeout: int = EXEC_TIMEOUT) -> dict:
         stdout = proc.stdout or ""
         stderr = proc.stderr or ""
         images: list[str] = []
-        if "__NEXUS_IMGS__" in stdout:
-            before, rest = stdout.split("__NEXUS_IMGS__", 1)
+        if "__MARCELLUS_IMGS__" in stdout:
+            before, rest = stdout.split("__MARCELLUS_IMGS__", 1)
             img_part, after = rest.split("__END_IMGS__", 1)
             stdout = before + after
             images = [x for x in img_part.split("||") if x]

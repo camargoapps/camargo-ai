@@ -52,21 +52,64 @@ HTML = """<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Nexus</title>
+  <title>Marcellus</title>
   <style>
     :root {
-      --bg: #f0f4f9;
+      color-scheme: light;
+      --bg: #f1f3f8;
       --panel: #ffffff;
-      --panel-2: #eef2f7;
-      --line: #dde3ed;
-      --text: #1e2636;
-      --muted: #64748b;
-      --accent: #4f6ef7;
-      --accent-h: #3b57e8;
+      --panel-2: #eef1f7;
+      --line: #dfe5ef;
+      --text: #1c2434;
+      --muted: #5f6c83;
+      --accent: #4055d4;
+      --accent-h: #3242ad;
+      --accent-fg: #ffffff;
+      --accent-soft: rgba(64,85,212,.12);
       --danger: #dc2626;
       --green: #10b981;
-      --shadow: 0 8px 28px rgba(15,23,42,.07);
-      --radius: 10px;
+      --shadow: 0 6px 22px rgba(15,23,42,.06);
+      --radius: 12px;
+      --user-bg: #e3e9fb;   --user-line: #ccd6f6;
+      --hover-bg: #e3e9fb;  --hover-line: #a9bcf5;
+      --focus: #a9bcf5;
+      --code-bg: #171e2e;   --code-fg: #e2e8f0;  --code-line: #2d3748;
+      --icode-bg: #edf1f7;  --icode-fg: #35509c;
+      --ok-bg: #dcfce7;     --ok-line: #86efac;
+      --bad-bg: #fee2e2;    --bad-line: #fca5a5;
+      --warn-bg: #fef3c7;   --warn-fg: #92400e;  --warn-line: #fbbf24;
+      --alert-bg: #fee2e2;  --alert-fg: #991b1b; --alert-line: #f87171;
+      --zip-bg: #f5f3ff;    --zip-line: #a78bfa; --zip-hover: #ede9fe;
+    }
+    [data-theme="dark"] {
+      color-scheme: dark;
+      --bg: #0e1117;
+      --panel: #161b24;
+      --panel-2: #1d2430;
+      --line: #2a3342;
+      --text: #e6eaf2;
+      --muted: #8b96ab;
+      --accent: #e3a63c;
+      --accent-h: #f0b954;
+      --accent-fg: #201503;
+      --accent-soft: rgba(227,166,60,.15);
+      --shadow: 0 6px 22px rgba(0,0,0,.35);
+      --user-bg: #263041;   --user-line: #35415a;
+      --hover-bg: #263041;  --hover-line: #4a5875;
+      --focus: #b98a2e;
+      --code-bg: #10151f;   --code-fg: #dbe2ee;  --code-line: #262f3f;
+      --icode-bg: #232b3a;  --icode-fg: #ecc069;
+      --ok-bg: #16341f;     --ok-line: #2c6e42;
+      --bad-bg: #3a1a1a;    --bad-line: #7f2f2f;
+      --warn-bg: #33270d;   --warn-fg: #f3c96b;  --warn-line: #8a6414;
+      --alert-bg: #391a1a;  --alert-fg: #f3a1a1; --alert-line: #a03535;
+      --zip-bg: #241f36;    --zip-line: #6b5bb8; --zip-hover: #2c2545;
+    }
+    *::-webkit-scrollbar { width: 9px; height: 9px; }
+    *::-webkit-scrollbar-thumb { background: var(--line); border-radius: 8px; }
+    *::-webkit-scrollbar-track { background: transparent; }
+    body, .topbar, .composer, .message, .ctrl-row select, .ctrl-row input, textarea {
+      transition: background-color .22s ease, color .22s ease, border-color .22s ease;
     }
     * { box-sizing: border-box; }
     body {
@@ -104,7 +147,7 @@ HTML = """<!doctype html>
     .btn-new {
       border: 0;
       background: var(--accent);
-      color: #fff;
+      color: var(--accent-fg);
       border-radius: var(--radius);
       padding: 10px 14px;
       cursor: pointer;
@@ -199,7 +242,7 @@ HTML = """<!doctype html>
       min-width: 34px; height: 32px; padding: 0 9px;
       cursor: pointer; font-size: 13px;
     }
-    .workspace-btn:hover { border-color: #93c5fd; background: #dbeafe; }
+    .workspace-btn:hover { border-color: var(--hover-line); background: var(--hover-bg); }
     .workspace-status {
       color: var(--muted); font-size: 12px;
       white-space: nowrap; max-width: 260px;
@@ -212,16 +255,16 @@ HTML = """<!doctype html>
     .model-dot.loaded { background: var(--green); }
 
     /* Messages */
-    .messages { overflow-y: auto; padding: 24px 20px; display: flex; flex-direction: column; gap: 14px; }
+    .messages { overflow-y: auto; padding: 26px 22px; display: flex; flex-direction: column; gap: 16px; }
     .message {
-      max-width: min(780px, 90%);
-      padding: 13px 16px;
+      max-width: min(800px, 90%);
+      padding: 14px 17px;
       border-radius: var(--radius);
       box-shadow: var(--shadow);
       line-height: 1.52;
       overflow-wrap: anywhere;
     }
-    .message.user { align-self: flex-end; background: #dbeafe; border: 1px solid #bfdbfe; }
+    .message.user { align-self: flex-end; background: var(--user-bg); border: 1px solid var(--user-line); box-shadow: none; }
     .message.assistant { align-self: flex-start; background: var(--panel); border: 1px solid var(--line); }
     .meta { display: block; font-size: 11px; color: var(--muted); margin-bottom: 5px; font-weight: 700; text-transform: uppercase; }
     .attachments { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 5px; }
@@ -234,8 +277,8 @@ HTML = """<!doctype html>
     }
     .fb-btn:hover { filter: none; }
     .fb-btn.active { filter: none; }
-    .fb-btn.active[data-v="up"] { background: #dcfce7; border-color: #86efac; }
-    .fb-btn.active[data-v="down"] { background: #fee2e2; border-color: #fca5a5; }
+    .fb-btn.active[data-v="up"] { background: var(--ok-bg); border-color: var(--ok-line); }
+    .fb-btn.active[data-v="down"] { background: var(--bad-bg); border-color: var(--bad-line); }
     .pill {
       border: 1px solid var(--line); background: var(--panel-2);
       border-radius: 999px; padding: 4px 10px; font-size: 12px;
@@ -243,17 +286,17 @@ HTML = """<!doctype html>
       max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
     .code-block {
-      background: #1a2234; color: #e2e8f0;
+      background: var(--code-bg); color: var(--code-fg);
       border-radius: 8px; padding: 12px 14px;
       overflow-x: auto; margin: 8px 0;
       font-family: 'Cascadia Code', 'Fira Code', ui-monospace, monospace;
       font-size: 13px; line-height: 1.55;
-      border: 1px solid #2d3748;
+      border: 1px solid var(--code-line);
       white-space: pre;
     }
     .code-lang { display: block; color: #64748b; font-size: 10px; margin-bottom: 6px; }
     .inline-code {
-      background: #f1f5f9; color: #0f766e;
+      background: var(--icode-bg); color: var(--icode-fg);
       padding: 1px 5px; border-radius: 4px;
       font-family: ui-monospace, monospace; font-size: .875em;
     }
@@ -274,9 +317,9 @@ HTML = """<!doctype html>
       border: 1px solid var(--line); border-radius: 8px;
       padding: 10px 12px; outline: none; line-height: 1.45;
     }
-    textarea:focus { border-color: #93c5fd; box-shadow: 0 0 0 3px rgba(79,110,247,.12); }
+    textarea:focus { border-color: var(--focus); box-shadow: 0 0 0 3px var(--accent-soft); }
     .btn-send {
-      border: 0; background: var(--accent); color: #fff;
+      border: 0; background: var(--accent); color: var(--accent-fg);
       border-radius: 8px; padding: 10px 16px; cursor: pointer; font-weight: 600;
     }
     .btn-send:hover { background: var(--accent-h); }
@@ -295,16 +338,16 @@ HTML = """<!doctype html>
       transition: background .15s, border-color .15s;
       max-width: 260px;
     }
-    .agent-file-card:hover { background: #dbeafe; border-color: #93c5fd; }
+    .agent-file-card:hover { background: var(--hover-bg); border-color: var(--hover-line); }
     .agent-file-card .file-icon { font-size: 18px; flex-shrink: 0; }
     .agent-file-card .file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
     .agent-file-card .file-dl { color: var(--accent); font-size: 15px; flex-shrink: 0; }
-    .agent-file-card.zip { border-color: #a78bfa; background: #f5f3ff; }
-    .agent-file-card.zip:hover { background: #ede9fe; }
+    .agent-file-card.zip { border-color: var(--zip-line); background: var(--zip-bg); }
+    .agent-file-card.zip:hover { background: var(--zip-hover); }
 
     /* Drop overlay */
     .drop-overlay {
-      position: fixed; inset: 0; background: rgba(79,110,247,.14);
+      position: fixed; inset: 0; background: var(--accent-soft);
       border: 3px dashed var(--accent); z-index: 998;
       display: none; place-items: center; font-size: 26px;
       color: var(--accent); pointer-events: none;
@@ -358,7 +401,7 @@ HTML = """<!doctype html>
       border-radius: 6px; padding: 3px 8px; outline: none;
       background: var(--panel-2); color: var(--text); min-width: 120px;
     }
-    #titleInput:focus { border-color: #93c5fd; }
+    #titleInput:focus { border-color: var(--focus); }
 
     @media (max-width: 720px) {
       .app { grid-template-columns: 1fr; }
@@ -412,10 +455,10 @@ HTML = """<!doctype html>
       padding: 8px 16px; font-size: 13px; border-radius: 8px;
       margin: 0 0 8px 0; animation: fadeIn .3s ease;
     }
-    .ctx-banner.warn  { background: #fef3c7; color: #92400e; border: 1px solid #fbbf24; }
-    .ctx-banner.alert { background: #fee2e2; color: #991b1b; border: 1px solid #f87171; }
+    .ctx-banner.warn  { background: var(--warn-bg); color: var(--warn-fg); border: 1px solid var(--warn-line); }
+    .ctx-banner.alert { background: var(--alert-bg); color: var(--alert-fg); border: 1px solid var(--alert-line); }
     .ctx-banner a { color: inherit; font-weight: 700; cursor: pointer; text-decoration: underline; }
-    .ctx-bar { flex: 1; height: 4px; border-radius: 2px; background: #e5e7eb; overflow: hidden; }
+    .ctx-bar { flex: 1; height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
     .ctx-bar-fill { height: 100%; border-radius: 2px; transition: width .4s ease; }
     .ctx-banner.warn  .ctx-bar-fill { background: #f59e0b; }
     .ctx-banner.alert .ctx-bar-fill { background: #ef4444; }
@@ -444,7 +487,7 @@ HTML = """<!doctype html>
         <line x1="15.6" y1="16.8" x2="20.4" y2="12.2" stroke="#60a5fa" stroke-width="1.5" opacity=".65"/>
       </svg>
       <div>
-        <div class="brand-name">Nexus</div>
+        <div class="brand-name">Marcellus</div>
         <div class="brand-tag">IA local via Ollama</div>
       </div>
     </div>
@@ -464,6 +507,7 @@ HTML = """<!doctype html>
         <input id="titleInput" style="display:none" placeholder="Nome da conversa">
         <button class="icon-btn" id="editTitleBtn" title="Renomear conversa" style="font-size:13px;width:26px;height:26px;flex-shrink:0">✏</button>
       </div>
+      <button class="icon-btn" id="themeBtn" title="Alternar tema claro/escuro" style="font-size:15px; width:32px; height:32px; background:var(--panel-2); border:1px solid var(--line); border-radius:8px; cursor:pointer;">🌙</button>
       <button class="icon-btn" id="exportBtn" title="Exportar conversa como Markdown" style="font-size:15px; width:32px; height:32px; background:var(--panel-2); border:1px solid var(--line); border-radius:8px; cursor:pointer;">⬇</button>
       <div class="ctrl-row">
         <span class="ctrl-label">Modo</span>
@@ -526,6 +570,15 @@ HTML = """<!doctype html>
   let closedFolders = new Set(), menuConvId = null;
 
   const $ = id => document.getElementById(id);
+  const themeBtn = $("themeBtn");
+  function applyTheme(t) {
+    document.documentElement.dataset.theme = t;
+    themeBtn.textContent = t === "dark" ? "☀️" : "🌙";
+    localStorage.setItem("marcellus_theme", t);
+  }
+  applyTheme(localStorage.getItem("marcellus_theme") || "light");
+  themeBtn.onclick = () => applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
+
   const historyEl = $("history"), messagesEl = $("messages"), statusEl = $("statusBar");
   const chatTitleEl = $("chatTitle"), modelSelect = $("modelSelect");
   const personalitySelect = $("personalitySelect"), providerSelect = $("providerSelect");
@@ -1812,7 +1865,7 @@ def api_export_conversation(conv_id: str) -> Response | tuple[str, int]:
             lines_md.append(f"- {ins['content']}")
         lines_md.append("")
 
-    filename = f"nexus-conversa-{conv_id[:8]}.md"
+    filename = f"marcellus-conversa-{conv_id[:8]}.md"
     return Response(
         "\n".join(lines_md),
         mimetype="text/markdown",
@@ -2262,6 +2315,6 @@ threading.Thread(
 if __name__ == "__main__":
     import os as _os
     port = int(_os.environ.get("PORT", 5000))
-    print(f"Nexus — Interface: http://127.0.0.1:{port}")
+    print(f"Marcellus — Interface: http://127.0.0.1:{port}")
     print(f"Ollama esperado em: {ai_engine.OLLAMA_URL}")
     app.run(host="127.0.0.1", port=port, debug=True, threaded=True)

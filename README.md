@@ -1,4 +1,4 @@
-# Camargo AI
+# Marcellus (camargo-ai)
 
 Assistente de IA **100% local** construído para fazer um modelo pequeno (4B)
 render como um grande — via camada de sistema, não via hardware. Flask +
