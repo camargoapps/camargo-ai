@@ -13,6 +13,7 @@ import db as database
 import facts
 import few_shot
 import file_gen
+import math_tool
 import memory as mem
 import query_expand
 import reasoning
@@ -1999,6 +2000,14 @@ def api_chat(conv_id: str) -> Response | tuple[Response, int]:
         except ValueError:
             workspace_metrics = {"workspace_error": "A pasta vinculada não existe mais."}
     full_prompt, attachment_metrics = build_user_prompt(prompt, attachments, provider, conv["id"])
+
+    # Fase 6: pergunta de cálculo → resultado exato executado em Python,
+    # injetado como fato — o modelo apresenta, não chuta
+    calc_note = math_tool.solve(prompt)
+    if calc_note:
+        full_prompt += (
+            f"\n\n[Cálculo verificado por execução — use exatamente este resultado: {calc_note}]"
+        )
 
     if conv["title"] == "Nova conversa":
         title = summarize_title(prompt)
