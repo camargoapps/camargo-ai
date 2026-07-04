@@ -467,6 +467,9 @@ HTML = """<!doctype html>
         <label class="privacy-row" id="privacyLabel" style="display:none" title="Anonimiza dados antes de enviar">
           <input id="privacyMode" type="checkbox" checked> Privacidade
         </label>
+        <label class="privacy-row" title="Confere a resposta contra as referências antes de entregar (mais lento; ideal para pareceres)">
+          <input id="rigorMode" type="checkbox"> Rigoroso
+        </label>
       </div>
       <div class="workspace-row">
         <span class="ctrl-label">Workspace</span>
@@ -510,7 +513,7 @@ HTML = """<!doctype html>
   const historyEl = $("history"), messagesEl = $("messages"), statusEl = $("statusBar");
   const chatTitleEl = $("chatTitle"), modelSelect = $("modelSelect");
   const personalitySelect = $("personalitySelect"), providerSelect = $("providerSelect");
-  const apiKeyEl = $("apiKey"), privacyModeEl = $("privacyMode");
+  const apiKeyEl = $("apiKey"), privacyModeEl = $("privacyMode"), rigorModeEl = $("rigorMode");
   const promptEl = $("prompt"), filesEl = $("files"), fileListEl = $("fileList");
   const sendBtn = $("sendBtn"), modelDot = $("modelDot");
   const titleInputEl = $("titleInput"), dropOverlay = $("dropOverlay");
@@ -1128,6 +1131,7 @@ HTML = """<!doctype html>
     form.append("provider", providerSelect.value);
     form.append("api_key", apiKeyEl.value.trim());
     form.append("privacy_mode", privacyModeEl.checked ? "1" : "0");
+    form.append("rigor_mode", rigorModeEl.checked ? "1" : "0");
     form.append("personality", personalitySelect.value || "atlas");
     selectedFiles.forEach(f => form.append("files", f));
 
@@ -1196,6 +1200,9 @@ HTML = """<!doctype html>
             waitEl.innerHTML = `<span class="meta">Assistente</span>${renderContent(assistantText)}`;
             messagesEl.scrollTop = messagesEl.scrollHeight;
           }
+          if (ev.type === "status") {
+            statusEl.innerHTML = `<span class="mem-badge">${escapeHtml(ev.message || "")}</span>`;
+          }
           if (ev.type === "done") {
             conversations = ev.conversations;
             chatTitleEl.textContent = ev.conversation.title;
@@ -1212,8 +1219,9 @@ HTML = """<!doctype html>
             const wsChanged = (mt.workspace_added || 0) + (mt.workspace_updated || 0) + (mt.workspace_removed || 0);
             const ws = wsChanged ? ` · ws +${mt.workspace_added || 0}/alt ${mt.workspace_updated || 0}/rem ${mt.workspace_removed || 0}` : "";
             const reason = mt.reasoning ? ` · reasoning: ${mt.reasoning}` : "";
+            const rig = mt.rigor ? " · ✓ verificado" : "";
             const gl = ev.global_count != null ? ` · ${ev.global_count} global` : "";
-            const memInfo = `💾 ${ev.memory_count} mem · ${ev.insight_count} insights${gl} · ${ev.memories_used || 0} usadas${perf}${ctx}${rag}${ws}${reason}`;
+            const memInfo = `💾 ${ev.memory_count} mem · ${ev.insight_count} insights${gl} · ${ev.memories_used || 0} usadas${perf}${ctx}${rag}${ws}${reason}${rig}`;
             statusEl.innerHTML = `<span class="mem-badge">${memInfo}</span>`;
 
             const pct = mt.context_pct || 0;
@@ -1591,7 +1599,9 @@ def build_ollama_messages(
         ]
         if know_blocks:
             context_parts.append(
-                "[Referência geral — use apenas o que ajudar a responder; ignore o resto]\n"
+                "[Referência geral — use apenas o que ajudar a responder e cite a "
+                "fonte entre parênteses ao usar, ex.: (direito_administrativo_pmc). "
+                "Se as referências não cobrirem o assunto, diga isso em vez de inventar]\n"
                 + "\n\n".join(know_blocks)
             )
     if global_text:
@@ -1912,6 +1922,7 @@ def api_chat(conv_id: str) -> Response | tuple[Response, int]:
     provider = flask_request.form.get("provider", "local").strip()
     api_key = flask_request.form.get("api_key", "").strip()
     privacy_mode = flask_request.form.get("privacy_mode", "0") == "1"
+    rigor_mode = flask_request.form.get("rigor_mode", "0") == "1"
     personality_id = flask_request.form.get("personality", conv.get("personality", "atlas"))
     files = cast(list[FileStorage], flask_request.files.getlist("files"))
 
@@ -1983,7 +1994,8 @@ def api_chat(conv_id: str) -> Response | tuple[Response, int]:
         yield line({"type": "meta", "conversation": conv, "conversations": database.get_conversations()})
 
         try:
-            for chunk in ai_engine.stream_chat(model, ollama_messages, provider, api_key):
+            gen_options = reasoning.task_options(prompt) if provider == "local" else None
+            for chunk in ai_engine.stream_chat(model, ollama_messages, provider, api_key, options=gen_options):
                 if first_token_at is None:
                     first_token_at = time.perf_counter()
                 answer_parts.append(chunk)
@@ -1998,11 +2010,42 @@ def api_chat(conv_id: str) -> Response | tuple[Response, int]:
                     {"role": "user", "content": "Continue exatamente de onde parou, sem repetir."},
                 ]
                 cont_parts: list[str] = []
-                for chunk in ai_engine.stream_chat(model, cont_messages, provider, api_key):
+                for chunk in ai_engine.stream_chat(model, cont_messages, provider, api_key, options=gen_options):
                     cont_parts.append(chunk)
                     yield line({"type": "chunk", "content": chunk})
                 if cont_parts:
                     answer = (answer + " " + "".join(cont_parts)).strip()
+
+            # --- Modo rigoroso: verifica o rascunho contra as referências ---
+            # Segundo passe pelo mesmo modelo, temperatura baixa. Vale a
+            # latência dobrada quando a resposta fundamenta parecer/ato.
+            verification_applied = False
+            if rigor_mode and knowledge and provider == "local" and answer.strip():
+                yield line({"type": "status",
+                            "message": "Modo rigoroso: verificando a resposta contra as referências..."})
+                refs_txt = "\n\n".join(
+                    f"({str(k.get('source', 'ref')).rsplit('.', 1)[0]})\n{str(k['content']).strip()}"
+                    for k in knowledge if str(k.get("content", "")).strip()
+                )[:6000]
+                verify_prompt = (
+                    "Você é um revisor técnico. Compare o RASCUNHO com as REFERÊNCIAS.\n"
+                    "Corrija apenas afirmações que contradigam as referências e remova "
+                    "citações de artigos ou números de norma que não constem nelas, "
+                    "a menos que sejam de conhecimento certo. Mantenha o estilo e todo "
+                    "o restante do texto. Se o rascunho já estiver correto, devolva-o "
+                    "igual. Responda SOMENTE com a versão final, sem comentários.\n\n"
+                    f"PERGUNTA:\n{prompt[:800]}\n\n"
+                    f"REFERÊNCIAS:\n{refs_txt}\n\n"
+                    f"RASCUNHO:\n{answer[:6000]}"
+                )
+                verified = ai_engine.generate_text(
+                    model, verify_prompt, timeout=240,
+                    options={"temperature": 0.2, "num_ctx": ai_engine.OLLAMA_NUM_CTX},
+                )
+                # Proteção: verificação vazia ou encolhida demais = falhou; mantém rascunho
+                if len(verified) >= 0.4 * len(answer):
+                    answer = verified
+                    verification_applied = True
 
             # --- Parse and generate any files the AI embedded in its response ---
             cleaned_answer, file_blocks = file_gen.parse_file_blocks(answer)
@@ -2073,6 +2116,7 @@ def api_chat(conv_id: str) -> Response | tuple[Response, int]:
                     "response_seconds": total_seconds,
                     "first_token_seconds": first_token_seconds,
                     "reasoning": reasoning_profile,
+                    "rigor": verification_applied,
                     "workspace_added": int(workspace_metrics.get("added", 0) or 0),
                     "workspace_updated": int(workspace_metrics.get("updated", 0) or 0),
                     "workspace_removed": int(workspace_metrics.get("removed", 0) or 0),

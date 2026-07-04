@@ -53,6 +53,7 @@ def stream_chat(
     messages: list[dict[str, str]],
     provider: str = "local",
     api_key: str = "",
+    options: "dict | None" = None,
 ) -> Generator[str]:
     if not model:
         raise RuntimeError("Nenhum modelo selecionado.")
@@ -71,7 +72,10 @@ def stream_chat(
         )
     else:
         payload["think"] = _local_think_value(model)
-        payload["options"] = {"num_ctx": OLLAMA_NUM_CTX}
+        opts = {"num_ctx": OLLAMA_NUM_CTX}
+        if options:
+            opts.update(options)
+        payload["options"] = opts
         resp = requests.post(
             f"{OLLAMA_URL}/api/chat",
             json=payload,

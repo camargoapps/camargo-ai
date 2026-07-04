@@ -28,6 +28,29 @@ _SIMPLE_HINTS = (
     "traduz", "resuma em uma frase", "que horas",
 )
 
+# Parâmetros de geração por tipo de tarefa: factual/jurídico pede precisão
+# (temperatura baixa reduz alucinação); criativo pede variedade
+_FACTUAL_HINTS = (
+    "lei", "artigo", "decreto", "portaria", "norma", "estatuto", "parecer",
+    "jurídic", "juridic", "legal", "prazo", "direito", "quanto", "calcul",
+    "estágio probatório", "estagio probatorio", "desvio de função",
+)
+_CREATIVE_HINTS = (
+    "poema", "história", "historia", "criativ", "ideias", "brainstorm",
+    "slogan", "piada", "imagine", "invente", "metáfora", "metafora",
+)
+
+
+def task_options(prompt: str) -> "dict | None":
+    """Options do Ollama ajustadas ao tipo de pergunta, ou None (default)."""
+    p = prompt.lower()
+    if any(h in p for h in _CREATIVE_HINTS):
+        return {"temperature": 0.9}
+    if any(h in p for h in _FACTUAL_HINTS):
+        return {"temperature": 0.3, "top_p": 0.9}
+    return None
+
+
 REASONING_SCAFFOLD = (
     "\n\n[Método de resposta — siga internamente estas etapas, na ordem: "
     "1) identifique o que exatamente foi perguntado; "
