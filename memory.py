@@ -203,11 +203,13 @@ def retrieve(
 
 
 def maybe_consolidate(conv_id: str, model: str) -> None:
-    """Generate an insight from the most accessed memories every 10 user messages.
+    """Generate an insight from the most accessed memories every 5 user messages.
     The insight is stored per-conversation AND promoted to the global knowledge base.
     """
     count = count_user_messages(conv_id)
-    if count == 0 or count % 10 != 0:
+    # A cada 5 (era 10): conversa curta — o padrão de uso real — nunca
+    # chegava a 10 mensagens e saía sem consolidar nada
+    if count == 0 or count % 5 != 0:
         return
 
     with get_db() as conn:
