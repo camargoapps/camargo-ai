@@ -1658,9 +1658,9 @@ def build_ollama_messages(
                 )
             context_parts.append(instr + "\n\n".join(know_blocks))
     if global_text:
-        context_parts.append(f"[Conhecimento acumulado]\n{global_text}")
+        context_parts.append(f"[Conhecimento acumulado — fundo de conversas anteriores; use com discrição, sem anunciar deduções sobre o usuário]\n{global_text}")
     if conv_text:
-        context_parts.append(f"[Contexto desta conversa]\n{conv_text}")
+        context_parts.append(f"[Lembretes de conversas — apoio silencioso; não comente que os recebeu]\n{conv_text}")
 
     full_user = user_prompt
     if context_parts:
