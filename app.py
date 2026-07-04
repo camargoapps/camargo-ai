@@ -1591,7 +1591,10 @@ def build_ollama_messages(
             "## SOBRE O USUÁRIO (conhecimento de fundo)\n"
             "Incorpore com naturalidade, como quem simplesmente conhece a pessoa. "
             "NUNCA mencione esta seção, não recite estes itens em lista e não cite "
-            "nomes de sistemas internos (embeddings, RAG, memórias) sem necessidade.\n"
+            "nomes de sistemas internos (embeddings, RAG, memórias) sem necessidade. "
+            "Estes são os ÚNICOS fatos conhecidos sobre o usuário: não deduza nem "
+            "invente outros (aniversário, família, gostos, eventos) — o que não "
+            "estiver aqui ou na conversa, você simplesmente não sabe.\n"
             + facts_block
         )
     system_parts.append(f"## DATA ATUAL\n{time.strftime('%d/%m/%Y')}")
