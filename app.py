@@ -17,6 +17,7 @@ import math_tool
 import memory as mem
 import query_expand
 import reasoning
+import web_search
 from db import UPLOAD_DIR, AGENT_FILES_DIR
 from personality import get_personality, list_personalities
 from utils import anonymize_for_cloud, summarize_title, similarity, tokenize, now_iso
@@ -482,6 +483,9 @@ HTML = """<!doctype html>
         <label class="privacy-row" title="Confere a resposta contra as referências antes de entregar (mais lento; ideal para pareceres)">
           <input id="rigorMode" type="checkbox"> Rigoroso
         </label>
+        <label class="privacy-row" title="Consulta a internet (LexML para legislação + busca geral) e injeta como referência">
+          <input id="webMode" type="checkbox"> 🌐 Web
+        </label>
       </div>
       <div class="workspace-row">
         <span class="ctrl-label">Workspace</span>
@@ -525,7 +529,7 @@ HTML = """<!doctype html>
   const historyEl = $("history"), messagesEl = $("messages"), statusEl = $("statusBar");
   const chatTitleEl = $("chatTitle"), modelSelect = $("modelSelect");
   const personalitySelect = $("personalitySelect"), providerSelect = $("providerSelect");
-  const apiKeyEl = $("apiKey"), privacyModeEl = $("privacyMode"), rigorModeEl = $("rigorMode");
+  const apiKeyEl = $("apiKey"), privacyModeEl = $("privacyMode"), rigorModeEl = $("rigorMode"), webModeEl = $("webMode");
   const promptEl = $("prompt"), filesEl = $("files"), fileListEl = $("fileList");
   const sendBtn = $("sendBtn"), modelDot = $("modelDot");
   const titleInputEl = $("titleInput"), dropOverlay = $("dropOverlay");
@@ -1168,6 +1172,7 @@ HTML = """<!doctype html>
     form.append("api_key", apiKeyEl.value.trim());
     form.append("privacy_mode", privacyModeEl.checked ? "1" : "0");
     form.append("rigor_mode", rigorModeEl.checked ? "1" : "0");
+    form.append("web_mode", webModeEl.checked ? "1" : "0");
     form.append("personality", personalitySelect.value || "atlas");
     selectedFiles.forEach(f => form.append("files", f));
 
@@ -1983,6 +1988,7 @@ def api_chat(conv_id: str) -> Response | tuple[Response, int]:
     api_key = flask_request.form.get("api_key", "").strip()
     privacy_mode = flask_request.form.get("privacy_mode", "0") == "1"
     rigor_mode = flask_request.form.get("rigor_mode", "0") == "1"
+    web_mode = flask_request.form.get("web_mode", "0") == "1"
     personality_id = flask_request.form.get("personality", conv.get("personality", "atlas"))
     files = cast(list[FileStorage], flask_request.files.getlist("files"))
 
@@ -2008,6 +2014,16 @@ def api_chat(conv_id: str) -> Response | tuple[Response, int]:
         full_prompt += (
             f"\n\n[Cálculo verificado por execução — use exatamente este resultado: {calc_note}]"
         )
+
+    # Fase 7a: toggle 🌐 — código busca na web (LexML + geral), modelo só lê
+    if web_mode:
+        web_ctx = web_search.build_web_context(prompt)
+        if web_ctx:
+            full_prompt += (
+                "\n\n[Referências da web — podem estar desatualizadas ou imprecisas; "
+                "cite o domínio ou link ao usar; se contradisserem a base local, "
+                "aponte a divergência]\n" + web_ctx
+            )
 
     if conv["title"] == "Nova conversa":
         title = summarize_title(prompt)
