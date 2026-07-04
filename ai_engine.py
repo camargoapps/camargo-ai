@@ -87,10 +87,20 @@ def stream_chat(
     yield from _parse_stream(resp)
 
 
-def generate_text(model: str, prompt: str, timeout: int = 30) -> str:
+def generate_text(
+    model: str,
+    prompt: str,
+    timeout: int = 30,
+    options: "dict | None" = None,
+    keep_alive: "str | None" = None,
+) -> str:
     try:
         payload: dict = {"model": model, "prompt": prompt, "stream": False}
         payload["think"] = _local_think_value(model)
+        if options:
+            payload["options"] = options
+        if keep_alive:
+            payload["keep_alive"] = keep_alive
         resp = requests.post(
             f"{OLLAMA_URL}/api/generate",
             json=payload,

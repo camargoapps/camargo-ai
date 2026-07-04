@@ -14,6 +14,7 @@ import facts
 import few_shot
 import file_gen
 import memory as mem
+import query_expand
 import reasoning
 from db import UPLOAD_DIR, AGENT_FILES_DIR
 from personality import get_personality, list_personalities
@@ -1512,7 +1513,9 @@ def build_ollama_messages(
         system_parts.append(f"## CONTEXTO PERMANENTE (fatos sempre válidos sobre o usuário)\n{facts_block}")
     system_parts.append(f"## DATA ATUAL\n{time.strftime('%d/%m/%Y')}")
     system = "\n\n".join(system_parts)
-    system += few_shot.build_few_shot_block(is_cloud=is_cloud, personality_id=p.id)
+    system += few_shot.build_few_shot_block(
+        is_cloud=is_cloud, personality_id=p.id, prompt=raw_prompt or user_prompt,
+    )
     if anonymize:
         system += " Textos podem estar anonimizados; respeite os marcadores."
     if file_gen.wants_file_creation(user_prompt):
@@ -1899,12 +1902,22 @@ def api_chat(conv_id: str) -> Response | tuple[Response, int]:
         char_budget=CLOUD_RETRIEVAL_CHAR_BUDGET if is_cloud else LOCAL_RETRIEVAL_CHAR_BUDGET,
     )
     database.sync_knowledge()  # throttled: só reindexa se knowledge/ mudou
+    kn_limit = CLOUD_KNOWLEDGE_LIMIT if is_cloud else LOCAL_KNOWLEDGE_LIMIT
+    kn_budget = CLOUD_KNOWLEDGE_CHAR_BUDGET if is_cloud else LOCAL_KNOWLEDGE_CHAR_BUDGET
     knowledge = database.search_knowledge(
-        tokenize(prompt),
-        limit=CLOUD_KNOWLEDGE_LIMIT if is_cloud else LOCAL_KNOWLEDGE_LIMIT,
-        char_budget=CLOUD_KNOWLEDGE_CHAR_BUDGET if is_cloud else LOCAL_KNOWLEDGE_CHAR_BUDGET,
-        query_text=prompt,
+        tokenize(prompt), limit=kn_limit, char_budget=kn_budget, query_text=prompt,
     )
+    if not knowledge:
+        # Resgate de recall: pergunta coloquial sem match direto → o modelo
+        # pequeno gera termos formais/sinônimos e a busca roda de novo.
+        # Só paga a latência (~segundos) quando a busca direta falhou.
+        extra_terms = query_expand.expand_query(prompt)
+        if extra_terms:
+            knowledge = database.search_knowledge(
+                tokenize(prompt) + extra_terms,
+                limit=kn_limit, char_budget=kn_budget,
+                query_text=prompt + "\n" + " ".join(extra_terms),
+            )
     ollama_messages = build_ollama_messages(
         conv["id"], full_prompt, memories,
         personality_id=personality_id, anonymize=privacy_applied, provider=provider,
@@ -2060,9 +2073,17 @@ def api_execute_code() -> Response | tuple[Response, int]:
 
 database.init_db()
 
-# Indexa a base de conhecimento geral em background (embeddings via Ollama
-# podem demorar na primeira vez; não pode travar o startup)
-threading.Thread(target=lambda: database.sync_knowledge(force=True), daemon=True).start()
+# Indexa a base de conhecimento geral e os embeddings do few-shot em
+# background (embeddings via Ollama podem demorar na primeira vez;
+# não pode travar o startup)
+threading.Thread(
+    target=lambda: (
+        database.sync_knowledge(force=True),
+        few_shot.warm_cache(),
+        query_expand.warm(),
+    ),
+    daemon=True,
+).start()
 
 if __name__ == "__main__":
     import os as _os

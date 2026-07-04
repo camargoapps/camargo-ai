@@ -26,6 +26,7 @@ from pathlib import Path
 import ai_engine
 import db as database
 import memory as mem
+import query_expand
 from app import (
     build_ollama_messages,
     LOCAL_RETRIEVAL_LIMIT, LOCAL_RETRIEVAL_CHAR_BUDGET,
@@ -68,6 +69,16 @@ def run_question(model: str, question: dict, personality: str) -> dict:
         char_budget=LOCAL_KNOWLEDGE_CHAR_BUDGET,
         query_text=pergunta,
     )
+    if not knowledge:
+        # Mesmo resgate de recall do app.py: expande só quando a busca falhou
+        extra_terms = query_expand.expand_query(pergunta)
+        if extra_terms:
+            knowledge = database.search_knowledge(
+                tokenize(pergunta) + extra_terms,
+                limit=LOCAL_KNOWLEDGE_LIMIT,
+                char_budget=LOCAL_KNOWLEDGE_CHAR_BUDGET,
+                query_text=pergunta + "\n" + " ".join(extra_terms),
+            )
     messages = build_ollama_messages(
         "", pergunta, memories,
         personality_id=personality, provider="local", raw_prompt=pergunta,
