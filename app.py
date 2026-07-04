@@ -1049,7 +1049,7 @@ HTML = """<!doctype html>
     const data = await apiFetch(`/api/conversations/${id}`);
     currentId = id;
     chatTitleEl.textContent = data.conversation.title;
-    const p = data.conversation.personality || "atlas";
+    const p = data.conversation.personality || "marcelo";
     if (personalitySelect.querySelector(`option[value="${p}"]`)) personalitySelect.value = p;
     renderWorkspaceSummary(data.workspace || data.conversation);
     renderHistory();
@@ -1061,7 +1061,7 @@ HTML = """<!doctype html>
     const data = await apiFetch("/api/conversations", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({personality: personalitySelect.value || "atlas"}),
+      body: JSON.stringify({personality: personalitySelect.value || "marcelo"}),
     });
     currentId = data.conversation.id;
     await loadConversations();
@@ -1226,7 +1226,7 @@ HTML = """<!doctype html>
     form.append("privacy_mode", privacyModeEl.checked ? "1" : "0");
     form.append("rigor_mode", rigorModeEl.checked ? "1" : "0");
     form.append("web_mode", webModeEl.checked ? "1" : "0");
-    form.append("personality", personalitySelect.value || "atlas");
+    form.append("personality", personalitySelect.value || "marcelo");
     selectedFiles.forEach(f => form.append("files", f));
 
     const optFiles = selectedFiles.map(f => ({name: f.name}));
@@ -1592,7 +1592,7 @@ def build_ollama_messages(
     conv_id: str,
     user_prompt: str,
     memories: list[dict[str, Any]],
-    personality_id: str = "atlas",
+    personality_id: str = "marcelo",
     anonymize: bool = False,
     provider: str = "local",
     raw_prompt: str = "",
@@ -1944,7 +1944,7 @@ def api_folder(folder_id: str) -> Response | tuple[Response, int]:
 def api_conversations() -> Response:
     if flask_request.method == "POST":
         body = flask_request.get_json(silent=True) or {}
-        personality = str(body.get("personality", "atlas"))
+        personality = str(body.get("personality", "marcelo"))
         conv = database.get_or_create_conversation(title="Nova conversa", personality=personality)
         return jsonify({"conversation": conv, "conversations": database.get_conversations()})
     return jsonify({"conversations": database.get_conversations()})
@@ -2042,7 +2042,7 @@ def api_chat(conv_id: str) -> Response | tuple[Response, int]:
     privacy_mode = flask_request.form.get("privacy_mode", "0") == "1"
     rigor_mode = flask_request.form.get("rigor_mode", "0") == "1"
     web_mode = flask_request.form.get("web_mode", "0") == "1"
-    personality_id = flask_request.form.get("personality", conv.get("personality", "atlas"))
+    personality_id = flask_request.form.get("personality", conv.get("personality", "marcelo"))
     files = cast(list[FileStorage], flask_request.files.getlist("files"))
 
     if not prompt and not files:
