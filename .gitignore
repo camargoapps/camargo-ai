@@ -16,6 +16,7 @@ develop-eggs/
 .installed.cfg
 lib/
 lib64/
+.ipynb_checkpoints/
 
 # Virtual environment
 venv/
@@ -28,14 +29,25 @@ ENV/
 .env.*
 *.env
 
-# Database
-data/app.db
+# Databases
 *.db
 *.sqlite3
 
-# Uploads and generated files
-data/uploads/
-data/agent_files/
+# Dados do usuário em runtime (banco, uploads, fatos pessoais) —
+# o db.py recria a pasta sozinho; só o exemplo de facts vai pro repo
+data/*
+!data/facts.example.json
+
+# Conteúdo pessoal da base de conhecimento
+knowledge/perfil_marcelo_camargo.md
+
+# Artefatos gerados (deriváveis do dataset/ e do treino)
+dataset_openai.jsonl
+eval/results/
+camargo_finetuned/
+model_out/
+out/
+*.gguf
 
 # IDE
 .vscode/
@@ -45,6 +57,9 @@ data/agent_files/
 
 # Claude Code
 .claude/settings.local.json
+
+# Outros agentes
+.codex
 
 # OS
 .DS_Store

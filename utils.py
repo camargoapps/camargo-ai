@@ -29,6 +29,11 @@ def tokenize(text: str) -> list[str]:
     stopwords = {
         "para", "com", "uma", "que", "por", "das", "dos", "ele", "ela", "isso",
         "esse", "essa", "como", "mais", "mas", "foi", "tem", "vou", "sua", "seu",
+        # Interrogativas e auxiliares: aparecem em qualquer pergunta e desviam
+        # o BM25 para chunks que só compartilham a forma da pergunta
+        "qual", "quais", "quando", "onde", "quem", "porque", "sobre", "entre",
+        "pelo", "pela", "cada", "usar", "uso", "devo", "deve", "pode", "posso",
+        "quero", "preciso", "fazer", "são", "ser", "ter", "está", "estão",
         "the", "and", "you", "for", "with", "this", "that",
     }
     return [w for w in words if w not in stopwords]
@@ -41,14 +46,77 @@ def similarity(left: list[str], right: list[str]) -> float:
     return len(a & b) / len(a | b)
 
 
+def bm25_scores(
+    query_tokens: list[str],
+    corpus_tokens: list[list[str]],
+    k1: float = 1.5,
+    b: float = 0.75,
+) -> list[float]:
+    """Okapi BM25 over pre-tokenized docs. Returns one score per doc.
+
+    Keyword matching complements embeddings for exact technical terms
+    (siglas como SMGP, números de lei) que a busca vetorial dilui.
+    """
+    n_docs = len(corpus_tokens)
+    if n_docs == 0 or not query_tokens:
+        return []
+
+    doc_lens = [len(d) for d in corpus_tokens]
+    avg_len = sum(doc_lens) / n_docs or 1.0
+
+    import math as _math
+    from collections import Counter
+
+    doc_freq: Counter[str] = Counter()
+    for doc in corpus_tokens:
+        doc_freq.update(set(doc))
+
+    query_terms = set(query_tokens)
+    idf = {
+        t: _math.log(1 + (n_docs - doc_freq[t] + 0.5) / (doc_freq[t] + 0.5))
+        for t in query_terms if doc_freq[t] > 0
+    }
+
+    scores: list[float] = []
+    for doc, dlen in zip(corpus_tokens, doc_lens):
+        tf = Counter(doc)
+        s = 0.0
+        for term, term_idf in idf.items():
+            f = tf.get(term, 0)
+            if f:
+                s += term_idf * (f * (k1 + 1)) / (f + k1 * (1 - b + b * dlen / avg_len))
+        scores.append(s)
+    return scores
+
+
+def rrf_fuse(
+    rankings: list[list[int]],
+    k: int = 60,
+    weights: "list[float] | None" = None,
+) -> dict[int, float]:
+    """Reciprocal Rank Fusion: combina múltiplos rankings (listas de índices
+    ordenados do melhor pro pior) num score único por índice.
+    weights: peso por ranking (ex.: BM25 mais confiável que o vetor)."""
+    fused: dict[int, float] = {}
+    for r_idx, ranking in enumerate(rankings):
+        w = weights[r_idx] if weights and r_idx < len(weights) else 1.0
+        for rank, idx in enumerate(ranking):
+            fused[idx] = fused.get(idx, 0.0) + w / (k + rank + 1)
+    return fused
+
+
 EMBED_MODEL = "nomic-embed-text"
 _EMBED_URL = "http://127.0.0.1:11434/api/embed"
 
 
-def get_embedding(text: str) -> "list[float] | None":
+def get_embedding(text: str, kind: str = "document") -> "list[float] | None":
+    """kind: 'document' ao indexar, 'query' ao buscar.
+    O nomic-embed-text exige esses prefixos de tarefa; sem eles os scores
+    ficam achatados (~0.69 para tudo) e a busca vetorial não discrimina."""
     import json as _json
     import urllib.request as _req
-    payload = _json.dumps({"model": EMBED_MODEL, "input": text[:2000]}).encode()
+    prefix = "search_query: " if kind == "query" else "search_document: "
+    payload = _json.dumps({"model": EMBED_MODEL, "input": prefix + text[:2000]}).encode()
     try:
         req = _req.Request(_EMBED_URL, data=payload, headers={"Content-Type": "application/json"})
         with _req.urlopen(req, timeout=10) as resp:

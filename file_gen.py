@@ -15,6 +15,15 @@ from typing import Any
 from xml.sax.saxutils import escape as xml_escape
 
 FILE_BLOCK_RE = re.compile(r'<<<FILE:([^\n>]+)>>>\n?(.*?)<<<END_FILE>>>', re.DOTALL)
+
+_CODE_LANGS: dict[str, str] = {
+    "py": "python", "js": "javascript", "ts": "typescript",
+    "sh": "bash", "sql": "sql", "html": "html", "css": "css",
+    "json": "json", "xml": "xml", "yaml": "yaml", "yml": "yaml",
+    "csv": "csv", "md": "markdown", "rs": "rust", "go": "go",
+    "java": "java", "kt": "kotlin", "rb": "ruby", "php": "php",
+    "c": "c", "cpp": "cpp", "cs": "csharp", "r": "r",
+}
 DISPLAY_FILE_RE = re.compile(
     r'^\[📄\s*([^\]\n]+?\.[A-Za-z0-9]{2,8})\]\s*\n(.*?)(?=^\[📄\s*[^\]\n]+?\.[A-Za-z0-9]{2,8}\]\s*$|^\[📦|\n\*\*Para (?:usar|converter)|\nPara (?:usar|converter)|\nQuer que|\nOs arquivos|\Z)',
     re.DOTALL | re.MULTILINE,
@@ -56,6 +65,15 @@ def wants_file_creation(prompt: str) -> bool:
 # Parsing
 # ---------------------------------------------------------------------------
 
+_FENCE_RE = re.compile(r'^```[\w]*\n(.*?)\n?```\s*$', re.DOTALL)
+
+
+def _strip_code_fence(content: str) -> str:
+    """Remove surrounding ```lang...``` wrapper the AI sometimes adds inside FILE blocks."""
+    m = _FENCE_RE.match(content.strip())
+    return m.group(1) if m else content
+
+
 def parse_file_blocks(text: str) -> tuple[str, list[dict[str, str]]]:
     """Extract <<<FILE:name>>>...<<<END_FILE>>> blocks.
     Returns (cleaned_text, [{filename, content}, ...]).
@@ -64,8 +82,12 @@ def parse_file_blocks(text: str) -> tuple[str, list[dict[str, str]]]:
 
     def _replace(m: re.Match) -> str:
         filename = m.group(1).strip()
-        content = m.group(2).rstrip("\n")
+        content = _strip_code_fence(m.group(2).rstrip("\n"))
         files.append({"filename": filename, "content": content})
+        ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+        lang = _CODE_LANGS.get(ext, "")
+        if lang:
+            return f"[📄 {filename}]\n```{lang}\n{content}\n```"
         return f"[📄 {filename}]"
 
     cleaned = FILE_BLOCK_RE.sub(_replace, text)
@@ -164,7 +186,7 @@ def _create_xlsx(content: str, path: Path) -> None:
     import openpyxl
 
     wb = openpyxl.Workbook()
-    ws = wb.active
+    ws = wb.worksheets[0]
     reader = csv.reader(io.StringIO(content))
     for row in reader:
         ws.append(row)

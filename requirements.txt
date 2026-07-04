@@ -7,3 +7,6 @@ fpdf2
 pytesseract
 pymupdf
 Pillow
+matplotlib
+numpy
+seaborn

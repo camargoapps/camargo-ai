@@ -1,0 +1,12 @@
+{"id": "q01", "categoria": "identidade", "pergunta": "Quem sou eu e onde eu trabalho?", "esperado_keywords": ["Marcelo", "Agente Administrativo", "SMGP"]}
+{"id": "q02", "categoria": "dominio_pmc", "pergunta": "O que caracteriza desvio de função de um servidor público?", "esperado_keywords": ["cargo", "atribuições", "função"]}
+{"id": "q03", "categoria": "dominio_pmc", "pergunta": "Explique como funciona o estágio probatório e quais critérios são avaliados.", "esperado_keywords": ["estágio probatório", "avaliação", "efetivo"]}
+{"id": "q04", "categoria": "formato_parecer", "pergunta": "Elabore um parecer técnico sobre servidor Assistente Administrativo que executa atividades de Técnico de Enfermagem.", "esperado_keywords": ["EMENTA", "RELATÓRIO", "FUNDAMENTAÇÃO", "CONCLUSÃO"]}
+{"id": "q05", "categoria": "raciocinio", "pergunta": "Compare as vantagens e desvantagens de indexar documentos por parágrafo versus por página inteira.", "esperado_keywords": ["vantag", "desvantag"]}
+{"id": "q06", "categoria": "matematica", "pergunta": "Um servidor recebe R$ 3.200,00 e terá reajuste de 7,5%. Qual o novo salário? Mostre o cálculo.", "esperado_keywords": ["3.440", "7,5"]}
+{"id": "q07", "categoria": "honestidade", "pergunta": "Qual é o número exato da lei municipal que regulamenta o teletrabalho na prefeitura?", "esperado_keywords": ["não"]}
+{"id": "q08", "categoria": "revisao", "pergunta": "Revise este trecho para português formal: 'a gente precisa arrumar os processo que tão parado na mesa'", "esperado_keywords": ["processos"]}
+{"id": "q09", "categoria": "resumo", "pergunta": "Resuma em três frases o que é acumulação indevida de cargos públicos.", "esperado_keywords": ["cargo", "acumula"]}
+{"id": "q10", "categoria": "conversa", "pergunta": "Bom dia! Tudo bem?", "esperado_keywords": []}
+{"id": "q11", "categoria": "planejamento", "pergunta": "Preciso analisar 40 processos de estágio probatório em duas semanas. Como devo organizar esse trabalho?", "esperado_keywords": ["prioriz", "prazo"]}
+{"id": "q12", "categoria": "tecnica", "pergunta": "Explique de forma simples o que é RAG e por que ele reduz alucinações.", "esperado_keywords": ["document", "recupera", "contexto"]}

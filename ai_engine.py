@@ -7,6 +7,9 @@ import requests
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
 OLLAMA_CLOUD_URL = os.environ.get("OLLAMA_CLOUD_URL", "https://ollama.com").rstrip("/")
 DEFAULT_MODEL = os.environ.get("OLLAMA_MODEL", "")
+# Janela de contexto local: o default do Ollama (4096) trunca o INÍCIO do
+# prompt (system: identidade + fatos + exemplos) quando o contexto enche.
+OLLAMA_NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX", "8192"))
 
 
 def _is_gpt_oss(model: str) -> bool:
@@ -68,6 +71,7 @@ def stream_chat(
         )
     else:
         payload["think"] = _local_think_value(model)
+        payload["options"] = {"num_ctx": OLLAMA_NUM_CTX}
         resp = requests.post(
             f"{OLLAMA_URL}/api/chat",
             json=payload,
@@ -75,7 +79,11 @@ def stream_chat(
             timeout=(10, None),
         )
 
-    resp.raise_for_status()
+    try:
+        resp.raise_for_status()
+    except requests.HTTPError as exc:
+        detail = resp.text[:400] if resp.text else ""
+        raise RuntimeError(f"{exc}" + (f" — {detail}" if detail else "")) from exc
     yield from _parse_stream(resp)
 
 

@@ -10,14 +10,20 @@ from flask import request as flask_request, send_from_directory, stream_with_con
 
 import ai_engine
 import db as database
+import facts
+import few_shot
 import file_gen
 import memory as mem
+import reasoning
 from db import UPLOAD_DIR, AGENT_FILES_DIR
 from personality import get_personality, list_personalities
 from utils import anonymize_for_cloud, summarize_title, similarity, tokenize, now_iso
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = None
+
+CONTEXT_LIMIT_LOCAL = ai_engine.OLLAMA_NUM_CTX
+CONTEXT_LIMIT_CLOUD = 32768
 
 MEMORY_CONTEXT_TOKEN_BUDGET = 1300
 HISTORY_CONTEXT_TOKEN_BUDGET = 1800
@@ -29,6 +35,10 @@ CLOUD_RETRIEVAL_LIMIT = 18
 CLOUD_RETRIEVAL_CHAR_BUDGET = 15000
 LOCAL_ATTACHMENT_CHARS = 5200
 CLOUD_ATTACHMENT_CHARS = 18000
+LOCAL_KNOWLEDGE_LIMIT = 3
+LOCAL_KNOWLEDGE_CHAR_BUDGET = 2400
+CLOUD_KNOWLEDGE_LIMIT = 6
+CLOUD_KNOWLEDGE_CHAR_BUDGET = 7000
 
 # ---------------------------------------------------------------------------
 # HTML Template
@@ -335,6 +345,58 @@ HTML = """<!doctype html>
       .composer-inner { grid-template-columns: auto 1fr; }
       .btn-send { grid-column: 1/-1; }
     }
+
+    /* Agent file run button */
+    .agent-file-wrap { display: inline-flex; align-items: center; gap: 6px; }
+    .exec-agent-btn {
+      border: 1px solid #2d4a6e; background: #1a3050;
+      color: #60a5fa; border-radius: 6px;
+      width: 30px; height: 30px; cursor: pointer; font-size: 13px;
+      flex-shrink: 0; transition: background .15s;
+    }
+    .exec-agent-btn:hover { background: #1e4a7f; }
+    .exec-agent-btn:disabled { opacity: .6; cursor: wait; }
+
+    /* Code execution */
+    .code-wrap { display: flex; flex-direction: column; }
+    .exec-btn {
+      align-self: flex-start; margin-top: 6px; padding: 5px 14px;
+      background: #1a3050; color: #60a5fa;
+      border: 1px solid #2d4a6e; border-radius: 6px;
+      cursor: pointer; font-size: 12px; font-family: inherit;
+      transition: background .15s;
+    }
+    .exec-btn:hover { background: #1e4a7f; }
+    .exec-btn:disabled { opacity: .6; cursor: wait; }
+    .exec-output {
+      margin-top: 8px; padding: 10px 14px;
+      background: #0d1424; border-radius: 6px;
+      border-left: 3px solid #3b82f6;
+      font-size: 12.5px; font-family: 'Cascadia Code', ui-monospace, monospace;
+      white-space: pre-wrap; color: #e2e8f0;
+      max-height: 1400px; overflow-y: auto; line-height: 1.5;
+    }
+    .exec-output.error { border-left-color: #ef4444; }
+    .exec-send-btn {
+      display: inline-block; margin-top: 8px; padding: 4px 12px;
+      background: transparent; color: #60a5fa;
+      border: 1px solid #2d4a6e; border-radius: 6px;
+      cursor: pointer; font-size: 11.5px; font-family: inherit;
+    }
+    .exec-send-btn:hover { background: #1a3050; }
+    .ctx-banner {
+      display: flex; align-items: center; gap: 10px;
+      padding: 8px 16px; font-size: 13px; border-radius: 8px;
+      margin: 0 0 8px 0; animation: fadeIn .3s ease;
+    }
+    .ctx-banner.warn  { background: #fef3c7; color: #92400e; border: 1px solid #fbbf24; }
+    .ctx-banner.alert { background: #fee2e2; color: #991b1b; border: 1px solid #f87171; }
+    .ctx-banner a { color: inherit; font-weight: 700; cursor: pointer; text-decoration: underline; }
+    .ctx-bar { flex: 1; height: 4px; border-radius: 2px; background: #e5e7eb; overflow: hidden; }
+    .ctx-bar-fill { height: 100%; border-radius: 2px; transition: width .4s ease; }
+    .ctx-banner.warn  .ctx-bar-fill { background: #f59e0b; }
+    .ctx-banner.alert .ctx-bar-fill { background: #ef4444; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
   </style>
 </head>
 <body>
@@ -409,6 +471,7 @@ HTML = """<!doctype html>
       <div class="empty">Comece uma conversa. Anexos são guardados no histórico e textos entram como contexto.</div>
     </section>
 
+    <div id="ctxBanner" style="display:none; padding: 0 16px;"></div>
     <footer class="composer">
       <form id="chatForm">
         <div class="composer-inner">
@@ -428,6 +491,7 @@ HTML = """<!doctype html>
   let conversations = [], folders = [], currentId = null, selectedFiles = [];
   let activeController = null, isGenerating = false;
   let localModels = [], cloudModels = [];
+  let cloudConnected = false;
   let closedFolders = new Set(), menuConvId = null;
 
   const $ = id => document.getElementById(id);
@@ -454,23 +518,32 @@ HTML = """<!doctype html>
     return '<div class="agent-files-row">' +
       files.map(f => {
         const isZip = (f.mime || "").includes("zip") || f.filename?.endsWith(".zip");
+        const isPy = (f.filename || "").toLowerCase().endsWith(".py");
+        const runBtn = isPy
+          ? `<button class="exec-agent-btn" data-exec-file-id="${escapeHtml(f.id)}" title="Executar arquivo">&#9654;</button>`
+          : '';
+        let card;
         if (f.save_to_workspace) {
-          return `<a class="agent-file-card${isZip ? " zip" : ""}" href="/api/agent-files/${f.id}" data-agent-file-id="${escapeHtml(f.id)}" title="Salvar no workspace">
+          card = `<a class="agent-file-card${isZip ? " zip" : ""}" href="/api/agent-files/${f.id}" data-agent-file-id="${escapeHtml(f.id)}" title="Salvar no workspace">
             <span class="file-icon">${fileIcon(f.filename)}</span>
             <span class="file-name">${escapeHtml(f.filename)}</span>
-            <span class="file-dl">⬇</span>
+            <span class="file-dl">&#11015;</span>
+          </a>`;
+        } else {
+          card = `<a class="agent-file-card${isZip ? " zip" : ""}" href="/api/agent-files/${f.id}" download="${escapeHtml(f.filename)}">
+            <span class="file-icon">${fileIcon(f.filename)}</span>
+            <span class="file-name">${escapeHtml(f.filename)}</span>
+            <span class="file-dl">&#11015;</span>
           </a>`;
         }
-        return `<a class="agent-file-card${isZip ? " zip" : ""}" href="/api/agent-files/${f.id}" download="${escapeHtml(f.filename)}">
-          <span class="file-icon">${fileIcon(f.filename)}</span>
-          <span class="file-name">${escapeHtml(f.filename)}</span>
-          <span class="file-dl">⬇</span>
-        </a>`;
+        return `<div class="agent-file-wrap">${card}${runBtn}</div>`;
       }).join("") +
     "</div>";
   }
 
   messagesEl.addEventListener("click", async e => {
+    const execBtn = e.target.closest("[data-exec-file-id]");
+    if (execBtn) { e.preventDefault(); e.stopPropagation(); runAgentFile(execBtn); return; }
     const btn = e.target.closest("[data-agent-file-id]");
     if (!btn) return;
     e.preventDefault();
@@ -495,12 +568,23 @@ HTML = """<!doctype html>
                     .replaceAll('"',"&quot;").replaceAll("'","&#039;");
   }
 
+  const execCodeStore = [];
+
   function renderContent(text) {
     const blocks = [];
     let t = String(text).replace(/```([\\w]*)\\n?([\\s\\S]*?)```/g, (_, lang, code) => {
       const i = blocks.length;
       const lbl = lang ? `<span class="code-lang">${escapeHtml(lang)}</span>` : '';
-      blocks.push(`<pre class="code-block">${lbl}<code>${escapeHtml(code.trim())}</code></pre>`);
+      const isPy = ['python', 'py', 'python3'].includes((lang || '').toLowerCase());
+      const pre = `<pre class="code-block">${lbl}<code>${escapeHtml(code.trim())}</code></pre>`;
+      if (isPy) {
+        const idx = execCodeStore.length;
+        execCodeStore.push(code.trim());
+        const runBtn = `<button class="exec-btn" data-exec-idx="${idx}" onclick="runCode(this)">&#9654; Executar</button>`;
+        blocks.push(`<div class="code-wrap">${pre}${runBtn}</div>`);
+      } else {
+        blocks.push(pre);
+      }
       return `\\uE000${i}\\uE001`;
     });
     t = t.replace(/`([^`\\n]{1,300})`/g, (_, c) => {
@@ -525,6 +609,13 @@ HTML = """<!doctype html>
 
   // --- Model dot status ---
   async function refreshModelDot(updateStatus = true) {
+    const isCloud = providerSelect.value === "cloud-direct";
+    if (isCloud) {
+      const active = cloudConnected && !!modelSelect.value;
+      modelDot.className = "model-dot" + (active ? " loaded" : "");
+      modelDot.title = active ? "Conectado ao Ollama Cloud" : "Cloud não conectado (informe a API key)";
+      return;
+    }
     try {
       const data = await apiFetch("/api/status");
       const loaded = data.loaded_models || [];
@@ -563,7 +654,7 @@ HTML = """<!doctype html>
 
   async function loadCloudModels() {
     const key = apiKeyEl.value.trim();
-    if (!key) { cloudModels = []; renderModelOptions(); return; }
+    if (!key) { cloudModels = []; cloudConnected = false; renderModelOptions(); refreshModelDot(); return; }
     try {
       const data = await apiFetch("/api/cloud-models", {
         method: "POST",
@@ -571,8 +662,13 @@ HTML = """<!doctype html>
         body: JSON.stringify({api_key: key}),
       });
       cloudModels = data.models || [];
+      cloudConnected = true;
       renderModelOptions();
-    } catch (e) { statusEl.textContent = e.message; }
+    } catch (e) {
+      cloudConnected = false;
+      statusEl.textContent = e.message;
+    }
+    refreshModelDot();
   }
 
   function renderModelOptions() {
@@ -608,7 +704,7 @@ HTML = """<!doctype html>
     const emoji = personalitySelect.querySelector(`option[value="${c.personality}"]`)?.textContent?.split(" ")[0] || "🤖";
     row.innerHTML = `
       <div class="conv-title" title="${escapeHtml(c.title)}">${escapeHtml(c.title)}</div>
-      <span class="conv-personality" title="${c.personality || 'default'}">${emoji}</span>
+      <span class="conv-personality" title="${c.personality || 'atlas'}">${emoji}</span>
       <button class="icon-btn" title="Opções" style="font-size:15px">⋯</button>`;
     row.querySelector(".conv-title").onclick = () => loadConversation(c.id);
     row.querySelector(".icon-btn").onclick = (e) => {
@@ -822,18 +918,19 @@ HTML = """<!doctype html>
     const data = await apiFetch(`/api/conversations/${id}`);
     currentId = id;
     chatTitleEl.textContent = data.conversation.title;
-    const p = data.conversation.personality || "default";
+    const p = data.conversation.personality || "atlas";
     if (personalitySelect.querySelector(`option[value="${p}"]`)) personalitySelect.value = p;
     renderWorkspaceSummary(data.workspace || data.conversation);
     renderHistory();
     renderMessages(data.messages);
+    $("ctxBanner").style.display = "none";
   }
 
   async function createConversation() {
     const data = await apiFetch("/api/conversations", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({personality: personalitySelect.value || "default"}),
+      body: JSON.stringify({personality: personalitySelect.value || "atlas"}),
     });
     currentId = data.conversation.id;
     await loadConversations();
@@ -996,7 +1093,7 @@ HTML = """<!doctype html>
     form.append("provider", providerSelect.value);
     form.append("api_key", apiKeyEl.value.trim());
     form.append("privacy_mode", privacyModeEl.checked ? "1" : "0");
-    form.append("personality", personalitySelect.value || "default");
+    form.append("personality", personalitySelect.value || "atlas");
     selectedFiles.forEach(f => form.append("files", f));
 
     const optFiles = selectedFiles.map(f => ({name: f.name}));
@@ -1083,6 +1180,28 @@ HTML = """<!doctype html>
             const gl = ev.global_count != null ? ` · ${ev.global_count} global` : "";
             const memInfo = `💾 ${ev.memory_count} mem · ${ev.insight_count} insights${gl} · ${ev.memories_used || 0} usadas${perf}${ctx}${rag}${ws}${reason}`;
             statusEl.innerHTML = `<span class="mem-badge">${memInfo}</span>`;
+
+            const pct = mt.context_pct || 0;
+            const ctxBanner = $("ctxBanner");
+            if (pct >= 85) {
+              ctxBanner.style.display = "block";
+              ctxBanner.innerHTML = `<div class="ctx-banner alert">
+                <span>⚠️ Contexto ${pct}% cheio — a conversa pode começar a perder coerência.</span>
+                <div class="ctx-bar"><div class="ctx-bar-fill" style="width:${pct}%"></div></div>
+                <a onclick="$('newChat').click()">Iniciar nova conversa</a>
+              </div>`;
+            } else if (pct >= 70) {
+              ctxBanner.style.display = "block";
+              ctxBanner.innerHTML = `<div class="ctx-banner warn">
+                <span>Contexto ${pct}% utilizado</span>
+                <div class="ctx-bar"><div class="ctx-bar-fill" style="width:${pct}%"></div></div>
+                <a onclick="$('newChat').click()">Nova conversa</a>
+              </div>`;
+            } else {
+              ctxBanner.style.display = "none";
+            }
+
+            if (providerSelect.value === "cloud-direct") cloudConnected = true;
             refreshModelDot(false);
           }
           if (ev.type === "error") throw new Error(ev.error);
@@ -1104,6 +1223,117 @@ HTML = """<!doctype html>
       setGenerating(false);
     }
   });
+
+  // --- Code execution ---
+  async function runCode(btn) {
+    const idx = parseInt(btn.dataset.execIdx, 10);
+    const code = execCodeStore[idx];
+    if (code === undefined) return;
+    btn.disabled = true;
+    btn.textContent = '\\u23F3 Executando...';
+    const prevOut = btn.nextElementSibling;
+    if (prevOut?.classList.contains('exec-output')) prevOut.remove();
+    try {
+      const data = await apiFetch('/api/execute-code', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({code}),
+      });
+      const out = document.createElement('div');
+      out.className = 'exec-output' + (data.ok ? '' : ' error');
+      let html = '';
+      if (data.stdout) html += escapeHtml(data.stdout).replace(/\\n/g, '<br>');
+      if (data.stderr) {
+        if (html) html += '<br>';
+        html += '<span style="color:#fca5a5">' + escapeHtml(data.stderr).replace(/\\n/g, '<br>') + '</span>';
+      }
+      if (!html) html = data.ok
+        ? '<span style="color:#94a3b8">(sem output)</span>'
+        : '<span style="color:#fca5a5">(erro desconhecido)</span>';
+      (data.images || []).forEach(b64 => {
+        html += '<img src="data:image/png;base64,' + b64 + '" alt="Gr\\u00e1fico gerado" style="max-width:100%;border-radius:6px;margin-top:8px;display:block">';
+      });
+      out.innerHTML = html;
+      const outputText = [data.stdout, data.stderr].filter(Boolean).join('\\n').trim();
+      if (outputText || (data.images || []).length) {
+        const sb = document.createElement('button');
+        sb.className = 'exec-send-btn';
+        sb.textContent = '\\u2191 Enviar resultado para o chat';
+        sb.onclick = () => sendCodeOutput(outputText, data.images || []);
+        out.appendChild(sb);
+      }
+      btn.after(out);
+    } catch (err) {
+      const out = document.createElement('div');
+      out.className = 'exec-output error';
+      out.textContent = err.message;
+      btn.after(out);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '\\u25b6 Executar';
+    }
+  }
+
+  async function runAgentFile(btn) {
+    const fileId = btn.dataset.execFileId;
+    btn.disabled = true;
+    btn.textContent = '\\u23F3';
+    const wrap = btn.closest('.agent-file-wrap');
+    const prevOut = wrap?.nextElementSibling;
+    if (prevOut?.classList.contains('exec-output')) prevOut.remove();
+    try {
+      const resp = await fetch('/api/agent-files/' + fileId);
+      if (!resp.ok) throw new Error('Erro ao carregar arquivo.');
+      const code = await resp.text();
+      const data = await apiFetch('/api/execute-code', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({code}),
+      });
+      const out = document.createElement('div');
+      out.className = 'exec-output' + (data.ok ? '' : ' error');
+      let html = '';
+      if (data.stdout) html += escapeHtml(data.stdout).replace(/\\n/g, '<br>');
+      if (data.stderr) {
+        if (html) html += '<br>';
+        html += '<span style="color:#fca5a5">' + escapeHtml(data.stderr).replace(/\\n/g, '<br>') + '</span>';
+      }
+      if (!html) html = data.ok
+        ? '<span style="color:#94a3b8">(sem output)</span>'
+        : '<span style="color:#fca5a5">(erro desconhecido)</span>';
+      (data.images || []).forEach(b64 => {
+        html += '<img src="data:image/png;base64,' + b64 + '" style="max-width:100%;border-radius:6px;margin-top:8px;display:block">';
+      });
+      out.innerHTML = html;
+      const outputText = [data.stdout, data.stderr].filter(Boolean).join('\\n').trim();
+      if (outputText || (data.images || []).length) {
+        const sb = document.createElement('button');
+        sb.className = 'exec-send-btn';
+        sb.textContent = '\\u2191 Enviar resultado para o chat';
+        sb.onclick = () => sendCodeOutput(outputText, data.images || []);
+        out.appendChild(sb);
+      }
+      (wrap || btn).after(out);
+    } catch (err) {
+      const out = document.createElement('div');
+      out.className = 'exec-output error';
+      out.textContent = err.message;
+      (wrap || btn).after(out);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '\\u25b6';
+    }
+  }
+
+  function sendCodeOutput(output, images) {
+    let msg = '';
+    if (output) msg = 'Output do c\\u00f3digo:\\n```\\n' + output + '\\n```';
+    if (images.length) msg += (msg ? '\\n\\n' : '') + images.length + ' imagem(ns) gerada(s) \\u2014 vis\\u00edvel acima no chat';
+    promptEl.value = msg;
+    promptEl.style.height = 'auto';
+    promptEl.style.height = Math.min(promptEl.scrollHeight, 150) + 'px';
+    promptEl.focus();
+  }
 
   // --- Init ---
   apiKeyEl.value = localStorage.getItem("nx_api_key") || "";
@@ -1225,9 +1455,11 @@ def build_ollama_messages(
     conv_id: str,
     user_prompt: str,
     memories: list[dict[str, Any]],
-    personality_id: str = "default",
+    personality_id: str = "atlas",
     anonymize: bool = False,
     provider: str = "local",
+    raw_prompt: str = "",
+    knowledge: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, str]]:
     p = get_personality(personality_id)
     is_cloud = provider == "cloud-direct"
@@ -1272,8 +1504,15 @@ def build_ollama_messages(
         global_text = anonymize_for_cloud(global_text)
         conv_text = anonymize_for_cloud(conv_text)
 
-    # System prompt stays lean — just personality (better for small models)
-    system = p.system_prompt
+    # System prompt em camadas: seções rotuladas evitam que modelos pequenos
+    # misturem identidade, fatos permanentes, instruções e exemplos
+    system_parts = [f"## IDENTIDADE\n{p.system_prompt}"]
+    facts_block = facts.get_facts_block()
+    if facts_block:
+        system_parts.append(f"## CONTEXTO PERMANENTE (fatos sempre válidos sobre o usuário)\n{facts_block}")
+    system_parts.append(f"## DATA ATUAL\n{time.strftime('%d/%m/%Y')}")
+    system = "\n\n".join(system_parts)
+    system += few_shot.build_few_shot_block(is_cloud=is_cloud, personality_id=p.id)
     if anonymize:
         system += " Textos podem estar anonimizados; respeite os marcadores."
     if file_gen.wants_file_creation(user_prompt):
@@ -1306,6 +1545,18 @@ def build_ollama_messages(
     # Context block appended to the user message — closer to model output improves recall
     # especially for small (4B) models where attention decays over long distances
     context_parts: list[str] = []
+    if knowledge:
+        # Base de conhecimento geral: não passa por anonimização (conteúdo de
+        # referência, sem dados pessoais — o anonimizador mutilaria os exemplos)
+        know_blocks = [
+            f"({str(k.get('source', 'ref')).rsplit('.', 1)[0]})\n{str(k['content']).strip()}"
+            for k in knowledge if str(k.get("content", "")).strip()
+        ]
+        if know_blocks:
+            context_parts.append(
+                "[Referência geral — use apenas o que ajudar a responder; ignore o resto]\n"
+                + "\n\n".join(know_blocks)
+            )
     if global_text:
         context_parts.append(f"[Conhecimento acumulado]\n{global_text}")
     if conv_text:
@@ -1314,6 +1565,13 @@ def build_ollama_messages(
     full_user = user_prompt
     if context_parts:
         full_user = user_prompt + "\n\n---\n" + "\n\n".join(context_parts)
+
+    # Chain-of-thought forçado: perguntas analíticas ganham um andaime de
+    # raciocínio no fim do contexto, onde a atenção de modelos pequenos é maior.
+    # Detecta sobre a pergunta crua, não sobre o prompt com trechos de arquivos.
+    scaffold = reasoning.build_scaffold(raw_prompt or user_prompt)
+    if scaffold:
+        full_user += scaffold
 
     messages.append({"role": "user", "content": full_user})
     return messages
@@ -1527,7 +1785,7 @@ def api_folder(folder_id: str) -> Response | tuple[Response, int]:
 def api_conversations() -> Response:
     if flask_request.method == "POST":
         body = flask_request.get_json(silent=True) or {}
-        personality = str(body.get("personality", "default"))
+        personality = str(body.get("personality", "atlas"))
         conv = database.get_or_create_conversation(title="Nova conversa", personality=personality)
         return jsonify({"conversation": conv, "conversations": database.get_conversations()})
     return jsonify({"conversations": database.get_conversations()})
@@ -1606,7 +1864,7 @@ def api_chat(conv_id: str) -> Response | tuple[Response, int]:
     provider = flask_request.form.get("provider", "local").strip()
     api_key = flask_request.form.get("api_key", "").strip()
     privacy_mode = flask_request.form.get("privacy_mode", "0") == "1"
-    personality_id = flask_request.form.get("personality", conv.get("personality", "default"))
+    personality_id = flask_request.form.get("personality", conv.get("personality", "atlas"))
     files = cast(list[FileStorage], flask_request.files.getlist("files"))
 
     if not prompt and not files:
@@ -1640,11 +1898,21 @@ def api_chat(conv_id: str) -> Response | tuple[Response, int]:
         limit=CLOUD_RETRIEVAL_LIMIT if is_cloud else LOCAL_RETRIEVAL_LIMIT,
         char_budget=CLOUD_RETRIEVAL_CHAR_BUDGET if is_cloud else LOCAL_RETRIEVAL_CHAR_BUDGET,
     )
+    database.sync_knowledge()  # throttled: só reindexa se knowledge/ mudou
+    knowledge = database.search_knowledge(
+        tokenize(prompt),
+        limit=CLOUD_KNOWLEDGE_LIMIT if is_cloud else LOCAL_KNOWLEDGE_LIMIT,
+        char_budget=CLOUD_KNOWLEDGE_CHAR_BUDGET if is_cloud else LOCAL_KNOWLEDGE_CHAR_BUDGET,
+        query_text=prompt,
+    )
     ollama_messages = build_ollama_messages(
         conv["id"], full_prompt, memories,
         personality_id=personality_id, anonymize=privacy_applied, provider=provider,
+        raw_prompt=prompt, knowledge=knowledge,
     )
     prompt_tokens_estimate = estimate_message_tokens(ollama_messages)
+    context_limit = CONTEXT_LIMIT_CLOUD if is_cloud else CONTEXT_LIMIT_LOCAL
+    context_pct = min(100, round(prompt_tokens_estimate / context_limit * 100))
     reasoning_profile = ai_engine.get_reasoning_profile(model, provider)
 
     def line(ev: dict[str, Any]) -> str:
@@ -1743,6 +2011,7 @@ def api_chat(conv_id: str) -> Response | tuple[Response, int]:
                 "privacy_applied": privacy_applied,
                 "metrics": {
                     "prompt_tokens_estimate": prompt_tokens_estimate,
+                    "context_pct": context_pct,
                     "response_seconds": total_seconds,
                     "first_token_seconds": first_token_seconds,
                     "reasoning": reasoning_profile,
@@ -1771,10 +2040,29 @@ def api_chat(conv_id: str) -> Response | tuple[Response, int]:
 
 
 # ---------------------------------------------------------------------------
+# Code execution
+# ---------------------------------------------------------------------------
+
+@app.route("/api/execute-code", methods=["POST"])
+def api_execute_code() -> Response | tuple[Response, int]:
+    import code_exec
+    body = flask_request.get_json(silent=True) or {}
+    code = str(body.get("code", "")).strip()
+    if not code:
+        return jsonify({"error": "Código vazio."}), 400
+    result = code_exec.execute_python(code)
+    return jsonify(result)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
 database.init_db()
+
+# Indexa a base de conhecimento geral em background (embeddings via Ollama
+# podem demorar na primeira vez; não pode travar o startup)
+threading.Thread(target=lambda: database.sync_knowledge(force=True), daemon=True).start()
 
 if __name__ == "__main__":
     import os as _os

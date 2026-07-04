@@ -1,0 +1,15 @@
+{
+  "usuario": "Seu Nome — cargo, setor, organização",
+  "contexto_trabalho": {
+    "cargo": "Seu cargo",
+    "setor": "Seu setor/departamento",
+    "funcoes": ["atividade 1", "atividade 2", "atividade 3"]
+  },
+  "local": "Cidade, Estado",
+  "sistemas": ["sistemas e ferramentas que você usa"],
+  "preferencias": {
+    "resposta": "como você prefere as respostas (ex.: técnica e direta)",
+    "idioma": "pt-BR",
+    "entregas": "formato preferido das entregas"
+  }
+}

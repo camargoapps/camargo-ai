@@ -46,7 +46,8 @@ def retrieve(
     char_budget: int = RETRIEVAL_CHAR_BUDGET,
 ) -> list[dict[str, Any]]:
     prompt_tokens = tokenize(prompt)
-    if not prompt_tokens:
+    # Don't retrieve memories for trivial/short messages — avoids polluting context
+    if not prompt_tokens or len(prompt.strip()) < 8:
         return []
 
     with get_db() as conn:
@@ -99,11 +100,14 @@ def retrieve(
                 toks = tokenize(str(row["content"]))
             ranked.append((s, dict(row), toks))
 
-    # Global insights: always include the best ones regardless of score threshold
+    # Global insights: only include when there's a real query to match against
     for row in global_rows:
         s = score(row, base_imp=3.0)
-        # Floor score ensures at least the top global insights are always considered
-        s = max(s, 0.12)
+        # Only apply floor when the prompt has enough substance to warrant global context
+        if prompt_tokens and len(prompt_tokens) >= 2:
+            s = max(s, 0.08)
+        if s <= 0:
+            continue
         try:
             toks = [str(t) for t in json.loads(str(row["tokens"] or "[]"))]
         except (json.JSONDecodeError, TypeError):
@@ -172,7 +176,12 @@ def maybe_consolidate(conv_id: str, model: str) -> None:
     if len(mems) < 4:
         return
 
-    mem_text = "\n".join(f"- {str(m['content'])[:250]}" for m in mems)
+    # Skip consolidation if most memories are trivial (short greetings, random chars)
+    substantial = [m for m in mems if len(str(m["content"]).strip()) >= 20]
+    if len(substantial) < 3:
+        return
+
+    mem_text = "\n".join(f"- {str(m['content'])[:250]}" for m in substantial)
     # Prompt tuned for small (4B) models: direct, single instruction, fact-focused
     prompt = (
         "Leia as mensagens abaixo e escreva de 1 a 3 fatos concretos sobre o usuário "

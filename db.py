@@ -4,6 +4,7 @@ import os
 import shutil
 import sqlite3
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -13,7 +14,7 @@ from werkzeug.utils import secure_filename
 from utils import (
     now_iso, new_id, row_to_dict,
     extract_text_preview, chunk_text, tokenize, similarity,
-    get_embedding, cosine_sim,
+    get_embedding, cosine_sim, bm25_scores, rrf_fuse,
 MAX_TEXT_PREVIEW, MAX_DOC_CHARS,
 )
 
@@ -21,6 +22,7 @@ BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 UPLOAD_DIR = DATA_DIR / "uploads"
 AGENT_FILES_DIR = DATA_DIR / "agent_files"
+KNOWLEDGE_DIR = BASE_DIR / "knowledge"
 DB_PATH = DATA_DIR / "app.db"
 
 DATA_DIR.mkdir(exist_ok=True)
@@ -106,6 +108,7 @@ def init_db() -> None:
                 tokens TEXT NOT NULL DEFAULT '[]',
                 embedding TEXT,
                 filename TEXT NOT NULL DEFAULT '',
+                doc_type TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (attachment_id) REFERENCES attachments(id) ON DELETE CASCADE
             );
@@ -154,6 +157,17 @@ def init_db() -> None:
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS knowledge_chunks (
+                id TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                chunk_index INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                tokens TEXT NOT NULL DEFAULT '[]',
+                embedding TEXT,
+                mtime REAL NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            );
         """)
         _migrate(conn)
 
@@ -192,6 +206,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
             conn.execute("ALTER TABLE doc_chunks ADD COLUMN filename TEXT NOT NULL DEFAULT ''")
         if "embedding" not in dc_cols:
             conn.execute("ALTER TABLE doc_chunks ADD COLUMN embedding TEXT")
+        if "doc_type" not in dc_cols:
+            conn.execute("ALTER TABLE doc_chunks ADD COLUMN doc_type TEXT NOT NULL DEFAULT ''")
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS workspace_files (
@@ -250,7 +266,7 @@ def get_conversations() -> list[dict[str, Any]]:
 def get_or_create_conversation(
     conv_id: str | None = None,
     title: str = "Nova conversa",
-    personality: str = "default",
+    personality: str = "atlas",
 ) -> dict[str, Any]:
     with get_db() as conn:
         if conv_id:
@@ -428,6 +444,44 @@ def add_message(conv_id: str, role: str, content: str) -> str:
     return mid
 
 
+# Metadados de tipo de documento: permitem priorizar chunks do tipo certo
+# quando a pergunta menciona explicitamente ("qual lei...", "na tabela salarial...")
+_DOC_TYPE_PATTERNS: list[tuple[str, tuple[str, ...]]] = [
+    ("parecer", ("parecer", "ementa", "relatorio", "relatório", "fundamentacao", "fundamentação")),
+    ("lei", ("lei n", "lei nº", "decreto", "portaria", "resolução", "resolucao", "art.", "artigo", "inciso", "parágrafo único")),
+    ("tabela", ("tabela", "planilha", ".xlsx", ".csv", "salarial", "vencimento", "referência salarial")),
+    ("email", ("assunto:", "prezado", "prezada", "atenciosamente", "cordialmente", "@")),
+    ("codigo", (".py", ".js", ".ts", ".java", "def ", "function ", "import ", "class ")),
+]
+
+_QUERY_TYPE_HINTS: dict[str, tuple[str, ...]] = {
+    "parecer": ("parecer", "pareceres", "ementa"),
+    "lei": ("lei", "leis", "decreto", "decretos", "norma", "normas", "portaria", "artigo", "legislacao", "legislação"),
+    "tabela": ("tabela", "tabelas", "planilha", "salarial", "vencimentos"),
+    "email": ("email", "e-mail", "mensagem"),
+    "codigo": ("codigo", "código", "script", "função", "funcao"),
+}
+
+
+def classify_doc_type(filename: str, content: str) -> str:
+    """Heurística leve: classifica o chunk pelo nome do arquivo + conteúdo."""
+    haystack = (filename + " " + content[:600]).lower()
+    best_type, best_hits = "", 0
+    for doc_type, keywords in _DOC_TYPE_PATTERNS:
+        hits = sum(1 for kw in keywords if kw in haystack)
+        if hits > best_hits:
+            best_type, best_hits = doc_type, hits
+    return best_type if best_hits >= 2 else ""
+
+
+def _wanted_doc_type(query_text: str) -> str:
+    q = query_text.lower()
+    for doc_type, hints in _QUERY_TYPE_HINTS.items():
+        if any(h in q for h in hints):
+            return doc_type
+    return ""
+
+
 def store_doc_chunks(
     attachment_id: str,
     conv_id: str,
@@ -444,13 +498,13 @@ def store_doc_chunks(
             emb = get_embedding(chunk) if with_embeddings else None
             conn.execute(
                 "INSERT INTO doc_chunks "
-                "(id, attachment_id, conversation_id, chunk_index, content, tokens, embedding, filename, created_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?)",
+                "(id, attachment_id, conversation_id, chunk_index, content, tokens, embedding, filename, doc_type, created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (
                     new_id(), attachment_id, conv_id, i, chunk,
                     json.dumps(toks[:450], ensure_ascii=False),
                     json.dumps(emb) if emb else None,
-                    filename, ts,
+                    filename, classify_doc_type(filename, chunk), ts,
                 ),
             )
 
@@ -501,38 +555,99 @@ def search_doc_chunks(
 
         return selected
 
-    # Targeted search: score by semantic embeddings when available, fallback to token similarity
-    query_emb: "list[float] | None" = get_embedding(query_text) if query_text else None
+    # Hybrid search: BM25 (keyword) + embeddings (semântico) fundidos via RRF.
+    # BM25 acerta termos exatos (siglas, nº de lei); o vetor acerta paráfrases.
+    wanted_type = _wanted_doc_type(query_text) if query_text else ""
+    boost = None
+    if wanted_type:
+        # Boost de metadado: pergunta menciona tipo ("qual lei...") → prioriza chunks do tipo
+        boost = lambda r: 1.3 if str(r.get("doc_type") or "") == wanted_type else 1.0
 
-    scored: list[tuple[float, dict[str, Any], "list[float] | None", list[str]]] = []
+    scored = _hybrid_rank(all_rows, query_tokens, query_text, boost=boost)
+    return _select_diverse(scored, limit, char_budget)
+
+
+def _hybrid_rank(
+    all_rows: list[dict[str, Any]],
+    query_tokens: list[str],
+    query_text: str = "",
+    boost: "Any | None" = None,
+) -> list[tuple[float, dict[str, Any], "list[float] | None", list[str]]]:
+    """Ranking híbrido BM25 + embeddings via RRF sobre linhas com colunas
+    content/tokens/embedding. Retorna [(score, row, emb, toks)] ordenado."""
+    query_emb: "list[float] | None" = (
+        get_embedding(query_text, kind="query") if query_text else None
+    )
+
+    row_embs: list["list[float] | None"] = []
+    row_toks: list[list[str]] = []
     for row in all_rows:
         row_emb: "list[float] | None" = None
-        s = 0.0
-
-        if query_emb:
-            emb_raw = row.get("embedding")
-            if emb_raw:
-                try:
-                    row_emb = json.loads(emb_raw)
-                    s = cosine_sim(query_emb, row_emb)
-                except (json.JSONDecodeError, TypeError):
-                    row_emb = None
-
+        emb_raw = row.get("embedding")
+        if query_emb and emb_raw:
+            try:
+                parsed = json.loads(emb_raw)
+                if isinstance(parsed, list):
+                    row_emb = parsed
+            except (json.JSONDecodeError, TypeError):
+                row_emb = None
+        row_embs.append(row_emb)
         try:
-            toks = [str(t) for t in json.loads(row["tokens"] or "[]")]
+            row_toks.append([str(t) for t in json.loads(row["tokens"] or "[]")])
         except (json.JSONDecodeError, TypeError):
-            toks = tokenize(str(row["content"]))
+            row_toks.append(tokenize(str(row["content"])))
 
-        if row_emb is None:
-            s = similarity(query_tokens, toks)
-            if s <= 0:
-                continue
+    # Fusão por score normalizado (não por posição/RRF): preserva a MARGEM do
+    # BM25 — um match 3x mais forte deve valer 3x, não "1º lugar". Necessário
+    # porque o nomic-embed em pt-BR devolve cossenos achatados (~0.63-0.69 até
+    # para temas sem relação) e, num ranking por posição, esse ruído plano
+    # afogaria acertos exatos de keyword.
+    kw = bm25_scores(query_tokens, row_toks)
+    kw_max = max(kw) if kw else 0.0
 
-        scored.append((s, row, row_emb, toks))
+    cos_list: list["float | None"] = [
+        cosine_sim(query_emb, e) if (query_emb and e is not None) else None
+        for e in row_embs
+    ]
+    valid_cos = [c for c in cos_list if c is not None and c > 0]
+    cos_min = min(valid_cos) if valid_cos else 0.0
+    cos_max = max(valid_cos) if valid_cos else 0.0
+    cos_span = cos_max - cos_min
 
-    scored.sort(key=lambda x: x[0], reverse=True)
+    W_KW, W_VEC = 0.65, 0.35
 
-    selected = []
+    fused: dict[int, float] = {}
+    for i in range(len(all_rows)):
+        s_kw = (kw[i] / kw_max) if kw_max > 0 else 0.0
+        s_vec = 0.0
+        c = cos_list[i]
+        if c is not None and c > 0 and cos_span > 0:
+            s_vec = (c - cos_min) / cos_span
+        # Candidato: tem match de keyword, ou é o destaque semântico da vez
+        # (permite recuperar paráfrases sem nenhum termo em comum)
+        if s_kw > 0 or s_vec >= 0.95:
+            fused[i] = W_KW * s_kw + W_VEC * s_vec
+
+    if not fused:
+        return []
+
+    if boost:
+        for i in list(fused):
+            fused[i] *= float(boost(all_rows[i]))
+
+    return [
+        (fused[i], all_rows[i], row_embs[i], row_toks[i])
+        for i in sorted(fused, key=lambda i: fused[i], reverse=True)
+    ]
+
+
+def _select_diverse(
+    scored: list[tuple[float, dict[str, Any], "list[float] | None", list[str]]],
+    limit: int,
+    char_budget: int,
+) -> list[dict[str, Any]]:
+    """Seleção final: respeita orçamento de chars e pula chunks redundantes."""
+    selected: list[dict[str, Any]] = []
     sel_embs: list["list[float] | None"] = []
     sel_toks: list[list[str]] = []
     used_chars = 0
@@ -560,6 +675,139 @@ def search_doc_chunks(
             break
 
     return selected
+
+
+# ---------------------------------------------------------------------------
+# Base de conhecimento geral (knowledge/) — conteúdo de referência disponível
+# em TODAS as conversas. Dá "cultura geral" a modelos pequenos via RAG.
+# ---------------------------------------------------------------------------
+
+_knowledge_lock = threading.Lock()
+_knowledge_last_check = 0.0
+KNOWLEDGE_SYNC_INTERVAL = 60.0  # segundos entre verificações de mtime
+
+
+def _split_knowledge_sections(text: str, max_chars: int = 2200) -> list[str]:
+    """Divide arquivos de referência por seção '## ' — cada seção é um chunk
+    coeso (uma fórmula, uma regra). Seções longas caem no chunking padrão."""
+    lines = text.strip().splitlines()
+    if not lines:
+        return []
+
+    sections: list[str] = []
+    current: list[str] = []
+    for line in lines:
+        if line.startswith("## ") and current:
+            sections.append("\n".join(current).strip())
+            current = [line]
+        else:
+            current.append(line)
+    if current:
+        sections.append("\n".join(current).strip())
+
+    result: list[str] = []
+    for sec in sections:
+        if not sec:
+            continue
+        if len(sec) <= max_chars:
+            result.append(sec)
+        else:
+            result.extend(chunk_text(sec, max_chars=max_chars))
+    return result
+
+
+def sync_knowledge(force: bool = False) -> dict[str, int]:
+    """Indexa/reindexa arquivos .md/.txt de knowledge/ cujo mtime mudou.
+    Barato quando nada mudou (só stat nos arquivos); throttled por padrão."""
+    global _knowledge_last_check
+    now = time.time()
+    if not force and now - _knowledge_last_check < KNOWLEDGE_SYNC_INTERVAL:
+        return {}
+
+    with _knowledge_lock:
+        _knowledge_last_check = now
+        if not KNOWLEDGE_DIR.exists():
+            return {"files": 0, "chunks_indexed": 0}
+
+        files = sorted(
+            list(KNOWLEDGE_DIR.glob("*.md")) + list(KNOWLEDGE_DIR.glob("*.txt"))
+        )
+        indexed = 0
+        with get_db() as conn:
+            stored = {
+                str(r["source"]): float(r["mtime"])
+                for r in conn.execute(
+                    "SELECT source, MAX(mtime) AS mtime FROM knowledge_chunks GROUP BY source"
+                ).fetchall()
+            }
+            current_names = {f.name for f in files}
+            for gone in set(stored) - current_names:
+                conn.execute("DELETE FROM knowledge_chunks WHERE source = ?", (gone,))
+
+            for fpath in files:
+                mtime = fpath.stat().st_mtime
+                if abs(stored.get(fpath.name, -1.0) - mtime) < 1e-6:
+                    continue
+                try:
+                    text = fpath.read_text(encoding="utf-8", errors="ignore")
+                except OSError:
+                    continue
+                conn.execute("DELETE FROM knowledge_chunks WHERE source = ?", (fpath.name,))
+                ts = now_iso()
+                for i, section in enumerate(_split_knowledge_sections(text)):
+                    toks = tokenize(section)
+                    if not toks:
+                        continue
+                    emb = get_embedding(section)
+                    conn.execute(
+                        "INSERT INTO knowledge_chunks "
+                        "(id, source, chunk_index, content, tokens, embedding, mtime, created_at) "
+                        "VALUES (?,?,?,?,?,?,?,?)",
+                        (
+                            new_id(), fpath.name, i, section,
+                            json.dumps(toks[:450], ensure_ascii=False),
+                            json.dumps(emb) if emb else None,
+                            mtime, ts,
+                        ),
+                    )
+                    indexed += 1
+
+        return {"files": len(files), "chunks_indexed": indexed}
+
+
+# Palavras de conversa cotidiana: não contam como "substância" para decidir
+# se vale buscar referência (mas continuam na busca quando ela acontece)
+_CHAT_NOISE = {
+    "bom", "boa", "dia", "tarde", "noite", "ola", "olá", "oii", "hey",
+    "tudo", "bem", "beleza", "valeu", "obrigado", "obrigada", "por", "favor",
+    "ate", "até", "logo", "tchau", "abraço", "abraco", "gente", "cara",
+}
+
+
+def search_knowledge(
+    query_tokens: list[str],
+    limit: int,
+    char_budget: int,
+    query_text: str = "",
+) -> list[dict[str, Any]]:
+    """Busca híbrida na base de conhecimento geral (todas as conversas)."""
+    # Saudações e conversa trivial não merecem contexto de referência.
+    # 1 token substantivo basta ("crase", "PROCV") — o tokenize já descarta
+    # interrogativas e auxiliares.
+    substance = [t for t in query_tokens if t not in _CHAT_NOISE]
+    if not substance:
+        return []
+    with get_db() as conn:
+        rows = conn.execute("SELECT * FROM knowledge_chunks").fetchall()
+    if not rows:
+        return []
+    scored = _hybrid_rank([dict(r) for r in rows], query_tokens, query_text)
+    return _select_diverse(scored, limit, char_budget)
+
+
+def count_knowledge_chunks() -> int:
+    with get_db() as conn:
+        return conn.execute("SELECT COUNT(*) FROM knowledge_chunks").fetchone()[0]
 
 
 def count_doc_chunks(conv_id: str) -> int:
