@@ -20,7 +20,10 @@ import time
 import ai_engine
 from utils import tokenize
 
-EXPAND_MODEL = os.environ.get("EXPAND_MODEL", "qwen3.5:0.8b")
+# Ajudante de bastidor: HELPER_MODEL troca todos de uma vez (num PC mais
+# forte, use um 4b+); EXPAND_MODEL sobrepõe só este papel
+HELPER_MODEL = os.environ.get("HELPER_MODEL", "qwen3.5:0.8b")
+EXPAND_MODEL = os.environ.get("EXPAND_MODEL", HELPER_MODEL)
 EXPAND_TIMEOUT = int(os.environ.get("EXPAND_TIMEOUT", "20"))
 MAX_EXTRA_TOKENS = 10
 _RECHECK_INTERVAL = 120.0  # segundos até tentar de novo quando o modelo faltou

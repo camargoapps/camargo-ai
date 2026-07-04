@@ -16,7 +16,7 @@ import re
 
 import ai_engine
 
-MATH_MODEL = os.environ.get("MATH_MODEL", "qwen3.5:0.8b")
+MATH_MODEL = os.environ.get("MATH_MODEL", os.environ.get("HELPER_MODEL", "qwen3.5:0.8b"))
 
 _CALC_HINTS = (
     "%", "quanto é", "quanto e ", "quanto dá", "quanto da ", "calcul",
